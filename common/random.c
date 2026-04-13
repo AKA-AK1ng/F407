@@ -11,7 +11,7 @@
 #endif
 #if defined(STM32F407xx)
 #include "stm32f4xx_hal.h"
-static RNG_HandleTypeDef hrng;
+extern RNG_HandleTypeDef hrng;
 #endif
 
 void random_init() {
@@ -75,9 +75,13 @@ void random_bytes(uint8_t *out, size_t len) {
 #elif defined(STM32F407xx)
     size_t offset = 0;
     while (offset < len) {
-        uint32_t val;
+        uint32_t val = 0;
         if (HAL_RNG_GenerateRandomNumber(&hrng, &val) != HAL_OK) {
-            while (1) {}
+            if (HAL_RNG_DeInit(&hrng) != HAL_OK ||
+                HAL_RNG_Init(&hrng) != HAL_OK ||
+                HAL_RNG_GenerateRandomNumber(&hrng, &val) != HAL_OK) {
+                val = HAL_GetTick();
+            }
         }
         size_t chunk = len - offset;
         if (chunk > 4) chunk = 4;
