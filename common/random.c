@@ -12,6 +12,7 @@
 #if defined(STM32F407xx)
 #include "stm32f4xx_hal.h"
 extern RNG_HandleTypeDef hrng;
+extern void Error_Handler(void);
 #endif
 
 void random_init() {
@@ -80,11 +81,7 @@ void random_bytes(uint8_t *out, size_t len) {
             if (HAL_RNG_DeInit(&hrng) != HAL_OK ||
                 HAL_RNG_Init(&hrng) != HAL_OK ||
                 HAL_RNG_GenerateRandomNumber(&hrng, &val) != HAL_OK) {
-                /* Fail-safe: avoid deadlock and avoid fake entropy on hardware RNG failure. */
-                for (; offset < len; offset++) {
-                    out[offset] = 0;
-                }
-                return;
+                Error_Handler();
             }
         }
         size_t chunk = len - offset;
