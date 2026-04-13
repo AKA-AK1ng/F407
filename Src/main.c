@@ -51,10 +51,10 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-// 串口接收变量
-uint8_t rx_buffer;        // 单字节接收缓存
-uint8_t cmd_flag = 0;     // 指令有效标志
-char cmd;                 // 存储接收到的指令
+// 串口接收变量（volatile：在ISR中修改、在主循环中读取，防止编译器优化导致主循环读不到变化）
+volatile uint8_t rx_buffer;        // 单字节接收缓存
+volatile uint8_t cmd_flag = 0;     // 指令有效标志（ISR置1，主循环清0）
+volatile char cmd;                 // 存储接收到的指令
 
 // RNG随机数变量
 uint32_t random_num;      // 存储32位硬件随机数
@@ -84,12 +84,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart->Instance == USART1)
   {
+    // LED1翻转：每收到1字节闪烁一次，硬件可见的接收指示
+    LED1_Toggle();
+
     // 读取接收到的指令
     cmd = rx_buffer;
-    // 置位指令标志
+    // 置位指令标志（主循环中会检测并处理）
     cmd_flag = 1;
     // 重新开启接收（无限次指令）
-    HAL_UART_Receive_IT(&huart1, &rx_buffer, 1);
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx_buffer, 1);
   }
 }
 /* USER CODE END 0 */
@@ -112,15 +115,19 @@ int main(void)
 
 
   // 3. 启动串口中断接收
-  HAL_UART_Receive_IT(&huart1, &rx_buffer, 1);
+  HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx_buffer, 1);
 
   /* USER CODE BEGIN 2 */
   // 开机提示
   printf("=========================\r\n");
   printf("  RNG TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
-  printf("CMD: R=PRINT RANDOM\r\n");
-  printf("CMD: L=RANDOM+LED FLASH\r\n");
+  printf("USART1: PA9(TX) PA10(RX)\r\n");
+  printf("115200 8N1, no flow ctrl\r\n");
+  printf("-------------------------\r\n");
+  printf("CMD: R = random_bytes(16)\r\n");
+  printf("CMD: P = poly uniform\r\n");
+  printf("CMD: E = poly eta (CBD)\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -130,6 +137,9 @@ int main(void)
       if(cmd_flag == 1)
       {
         cmd_flag = 0;
+
+        // 调试：打印收到的原始字节（十六进制）及可打印字符，方便排查是否进入主循环
+        printf("RX: 0x%02X ('%c')\r\n", (uint8_t)cmd, isprint((unsigned char)cmd) ? cmd : '.');
 
         if(cmd == 'R' || cmd == 'r')
         {
