@@ -80,7 +80,10 @@ void random_bytes(uint8_t *out, size_t len) {
             if (HAL_RNG_DeInit(&hrng) != HAL_OK ||
                 HAL_RNG_Init(&hrng) != HAL_OK ||
                 HAL_RNG_GenerateRandomNumber(&hrng, &val) != HAL_OK) {
-                val = HAL_GetTick();
+                for (; offset < len; offset++) {
+                    out[offset] = 0;
+                }
+                return;
             }
         }
         size_t chunk = len - offset;
