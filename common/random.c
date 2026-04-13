@@ -80,6 +80,7 @@ void random_bytes(uint8_t *out, size_t len) {
             if (HAL_RNG_DeInit(&hrng) != HAL_OK ||
                 HAL_RNG_Init(&hrng) != HAL_OK ||
                 HAL_RNG_GenerateRandomNumber(&hrng, &val) != HAL_OK) {
+                /* Fail-safe: avoid deadlock and avoid fake entropy on hardware RNG failure. */
                 for (; offset < len; offset++) {
                     out[offset] = 0;
                 }
