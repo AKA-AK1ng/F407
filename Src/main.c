@@ -58,6 +58,9 @@ volatile char cmd;                 // 存储接收到的指令
 
 // RNG随机数变量
 uint32_t random_num;      // 存储32位硬件随机数
+
+// 命令处理工作区（避免在主循环分支里创建大栈变量导致潜在栈溢出）
+static poly cmd_poly;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -161,13 +164,12 @@ int main(void)
           // --------------------------
           // 测试随机多项式 uniform
           // --------------------------
-          poly p;
-          random_poly_uniform(&p);
+          random_poly_uniform(&cmd_poly);
 
           printf("POLY UNIFORM (first 10 coeffs):\r\n");
           for(int i=0; i<10; i++)
           {
-            printf("%d ", p.coeffs[i]);
+            printf("%d ", cmd_poly.coeffs[i]);
           }
           printf("\r\n\r\n");
         }
@@ -176,13 +178,12 @@ int main(void)
           // --------------------------
           // 测试 CBD eta 随机多项式
           // --------------------------
-          poly p;
-          random_poly_eta(&p);
+          random_poly_eta(&cmd_poly);
 
           printf("POLY ETA (CBD, first 10):\r\n");
           for(int i=0; i<10; i++)
           {
-            printf("%d ", p.coeffs[i]);
+            printf("%d ", cmd_poly.coeffs[i]);
           }
           printf("\r\n\r\n");
         }
