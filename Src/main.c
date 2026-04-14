@@ -42,6 +42,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define XOF_D_PK_DOMAIN_SEP 0xFFu
+#define XOF_D_U_DOMAIN_SEP  10u
+#define XOF_D_PK_MODULUS    (MLWQ_Q / P_PK)
+#define XOF_D_U_MODULUS     (MLWQ_Q / P_U)
 
 /* USER CODE END PD */
 
@@ -213,14 +217,14 @@ int main(void)
           random_bytes(xof_seed_ct, SEEDBYTES);
 
           memcpy(xof_seed_d_pk_ext, xof_seed_d, SEEDBYTES);
-          xof_seed_d_pk_ext[SEEDBYTES] = 0xFF;
+          xof_seed_d_pk_ext[SEEDBYTES] = XOF_D_PK_DOMAIN_SEP;
           memcpy(xof_seed_d_u_ext, xof_seed_ct, SEEDBYTES);
-          xof_seed_d_u_ext[SEEDBYTES] = 10;
+          xof_seed_d_u_ext[SEEDBYTES] = XOF_D_U_DOMAIN_SEP;
 
           ref_xof_expand_matrix(&xof_A, xof_seed_A);
           // modulus与ref/mlwq.c保持一致：d_pk用q/P_PK，d_u用q/P_U
-          ref_xof_expand_poly_vec(&xof_d_pk, xof_seed_d_pk_ext, MLWQ_Q / P_PK);
-          ref_xof_expand_poly_vec(&xof_d_u, xof_seed_d_u_ext, MLWQ_Q / P_U);
+          ref_xof_expand_poly_vec(&xof_d_pk, xof_seed_d_pk_ext, XOF_D_PK_MODULUS);
+          ref_xof_expand_poly_vec(&xof_d_u, xof_seed_d_u_ext, XOF_D_U_MODULUS);
 
           printf("XOF ALL EXPAND DONE\r\n");
           printf("A[0][0] first 8: ");
