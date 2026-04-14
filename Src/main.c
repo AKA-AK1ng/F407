@@ -205,6 +205,7 @@ int main(void)
           static poly_vec s_prof, u_prof, as_prof;
           static poly_matrix A_prof;
           static uint8_t seed_A_prof[SEEDBYTES];
+          static int16_t saved_coeffs[MLWQ_N]; /* NTT 预测试原始系数 */
 
           /* ---- NTT 自检 ------------------------------------------------
            * 不变式：invntt(ntt(a))[i] = a[i] * R  (mod Q)，R = 2^16
@@ -212,7 +213,6 @@ int main(void)
            * 运行 10 组随机向量，全部通过才报告 PASS。
            * ---------------------------------------------------------------- */
           {
-            static int16_t save[MLWQ_N]; /* 保存原始系数，static 避免压栈 */
             int pass = 1;
             for(int trial = 0; trial < 10; trial++)
             {
@@ -221,7 +221,7 @@ int main(void)
 
               /* 保存原始系数 */
               for(int i = 0; i < MLWQ_N; i++)
-                save[i] = rt_poly.coeffs[i];
+                saved_coeffs[i] = rt_poly.coeffs[i];
 
               /* 正向 NTT 再逆向 NTT */
               ntt(rt_poly.coeffs);
@@ -231,7 +231,7 @@ int main(void)
               for(int i = 0; i < MLWQ_N; i++)
               {
                 int16_t got = montgomery_reduce((int32_t)rt_poly.coeffs[i]);
-                if(COEFF_MOD_Q(save[i]) != COEFF_MOD_Q(got)) { ok = 0; break; }
+                if(COEFF_MOD_Q(saved_coeffs[i]) != COEFF_MOD_Q(got)) { ok = 0; break; }
               }
               if(!ok) { pass = 0; break; }
             }
@@ -296,15 +296,19 @@ int main(void)
                  (unsigned long)cyc_as, (unsigned long)cyc_v_sub_su,
                  (unsigned long)cyc_s_transpose_u, (unsigned long)cyc_v_sub_stu);
 
-          printf("workspace bytes: a=%u b=%u add=%u sub=%u ntt_rt=%u total=%u\r\n",
+          printf("workspace bytes (poly): a=%u b=%u add=%u sub=%u ntt_rt=%u total=%u\r\n",
                  (unsigned)sizeof(a_poly),   (unsigned)sizeof(b_poly),
                  (unsigned)sizeof(add_poly), (unsigned)sizeof(sub_poly),
                  (unsigned)sizeof(rt_poly),
                  (unsigned)(sizeof(a_poly) + sizeof(b_poly) + sizeof(add_poly) +
-                            sizeof(sub_poly) + sizeof(rt_poly) + sizeof(v_prof) +
-                            sizeof(s_t_u_prof) + sizeof(diff_prof) +
+                            sizeof(sub_poly) + sizeof(rt_poly)));
+          printf("workspace bytes (arith): v=%u sTu=%u diff=%u s=%u u=%u As=%u A=%u seed=%u saved=%u total=%u\r\n",
+                 (unsigned)sizeof(v_prof), (unsigned)sizeof(s_t_u_prof), (unsigned)sizeof(diff_prof),
+                 (unsigned)sizeof(s_prof), (unsigned)sizeof(u_prof), (unsigned)sizeof(as_prof),
+                 (unsigned)sizeof(A_prof), (unsigned)sizeof(seed_A_prof), (unsigned)sizeof(saved_coeffs),
+                 (unsigned)(sizeof(v_prof) + sizeof(s_t_u_prof) + sizeof(diff_prof) +
                             sizeof(s_prof) + sizeof(u_prof) + sizeof(as_prof) +
-                            sizeof(A_prof) + sizeof(seed_A_prof)));
+                            sizeof(A_prof) + sizeof(seed_A_prof) + sizeof(saved_coeffs)));
 
           printf("sample a/add/rt first 4: %d %d %d %d / %d %d %d %d / %d %d %d %d\r\n",
                  a_poly.coeffs[0],   a_poly.coeffs[1],   a_poly.coeffs[2],   a_poly.coeffs[3],
