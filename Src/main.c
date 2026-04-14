@@ -33,6 +33,9 @@
 #include "random.h"
 #include "params.h"
 #include "xof.h"
+#include "poly.h"
+#include "ntt.h"
+#include "dwt_timer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +49,8 @@
 #define XOF_D_U_DOMAIN_SEP  10u
 #define XOF_D_PK_MODULUS    (MLWQ_Q / P_PK)
 #define XOF_D_U_MODULUS     (MLWQ_Q / P_U)
+#define POLY_PROF_CMD       'T'
+#define POLY_PROF_CMD_LOWER 't'
 
 /* USER CODE END PD */
 
@@ -77,11 +82,19 @@ static uint8_t xof_seed_d[SEEDBYTES];
 static uint8_t xof_seed_ct[SEEDBYTES];
 static uint8_t xof_seed_d_pk_ext[SEEDBYTES + 1];
 static uint8_t xof_seed_d_u_ext[SEEDBYTES + 1];
+
+// POLY/NTT 测试工作区：静态预分配，用于空间占用评估
+static poly poly_a;
+static poly poly_b;
+static poly poly_add_res;
+static poly poly_sub_res;
+static poly poly_ntt_rt;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static int poly_equal_mod_q(const poly *a, const poly *b);
 
 /* USER CODE END PFP */
 
@@ -97,6 +110,19 @@ int __io_putchar(int ch)
 int fputc(int ch, FILE *f)
 {
   return __io_putchar(ch);
+}
+
+static int poly_equal_mod_q(const poly *a, const poly *b)
+{
+  for(int i = 0; i < MLWQ_N; i++)
+  {
+    int32_t av = a->coeffs[i] % MLWQ_Q;
+    int32_t bv = b->coeffs[i] % MLWQ_Q;
+    if(av < 0) av += MLWQ_Q;
+    if(bv < 0) bv += MLWQ_Q;
+    if(av != bv) return 0;
+  }
+  return 1;
 }
 // 串口接收完成回调（收到1个字节就触发）
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -130,6 +156,7 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   MX_RNG_Init();
+  dwt_timer_init();
   //random_init();
 
 
@@ -148,6 +175,7 @@ int main(void)
   printf("CMD: P = poly uniform\r\n");
   printf("CMD: E = poly eta (CBD)\r\n");
   printf("CMD: X = XOF expand test (A,d_pk,d_u)\r\n");
+  printf("CMD: T = poly+ntt profile (space+cycles)\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -244,6 +272,57 @@ int main(void)
                  (unsigned long)sizeof(xof_d_pk),
                  (unsigned long)sizeof(xof_d_u),
                  (unsigned long)(sizeof(xof_A) + sizeof(xof_d_pk) + sizeof(xof_d_u)));
+        }
+        else if(cmd == POLY_PROF_CMD || cmd == POLY_PROF_CMD_LOWER)
+        {
+          uint32_t c_add, c_sub, c_ntt, c_invntt;
+          uint32_t t0, t1;
+          int ntt_ok;
+
+          random_poly_uniform(&poly_a);
+          random_poly_uniform(&poly_b);
+
+          t0 = dwt_timer_now();
+          ref_poly_add(&poly_add_res, &poly_a, &poly_b);
+          t1 = dwt_timer_now();
+          c_add = dwt_timer_elapsed(t0, t1);
+
+          t0 = dwt_timer_now();
+          ref_poly_sub(&poly_sub_res, &poly_a, &poly_b);
+          t1 = dwt_timer_now();
+          c_sub = dwt_timer_elapsed(t0, t1);
+
+          poly_ntt_rt = poly_a;
+          t0 = dwt_timer_now();
+          ntt(poly_ntt_rt.coeffs);
+          t1 = dwt_timer_now();
+          c_ntt = dwt_timer_elapsed(t0, t1);
+
+          t0 = dwt_timer_now();
+          invntt(poly_ntt_rt.coeffs);
+          t1 = dwt_timer_now();
+          c_invntt = dwt_timer_elapsed(t0, t1);
+          ntt_ok = poly_equal_mod_q(&poly_a, &poly_ntt_rt);
+
+          printf("POLY+NTT PROFILE\r\n");
+          printf("NTT pre-test (ntt->invntt): %s\r\n", ntt_ok ? "PASS" : "FAIL");
+          printf("cycles: add=%lu sub=%lu ntt=%lu invntt=%lu\r\n",
+                 (unsigned long)c_add,
+                 (unsigned long)c_sub,
+                 (unsigned long)c_ntt,
+                 (unsigned long)c_invntt);
+          printf("workspace bytes: a=%lu b=%lu add=%lu sub=%lu ntt_rt=%lu total=%lu\r\n",
+                 (unsigned long)sizeof(poly_a),
+                 (unsigned long)sizeof(poly_b),
+                 (unsigned long)sizeof(poly_add_res),
+                 (unsigned long)sizeof(poly_sub_res),
+                 (unsigned long)sizeof(poly_ntt_rt),
+                 (unsigned long)(sizeof(poly_a) + sizeof(poly_b) + sizeof(poly_add_res) +
+                                 sizeof(poly_sub_res) + sizeof(poly_ntt_rt)));
+          printf("sample a/add/rt first 4: %d %d %d %d / %d %d %d %d / %d %d %d %d\r\n\r\n",
+                 poly_a.coeffs[0], poly_a.coeffs[1], poly_a.coeffs[2], poly_a.coeffs[3],
+                 poly_add_res.coeffs[0], poly_add_res.coeffs[1], poly_add_res.coeffs[2], poly_add_res.coeffs[3],
+                 poly_ntt_rt.coeffs[0], poly_ntt_rt.coeffs[1], poly_ntt_rt.coeffs[2], poly_ntt_rt.coeffs[3]);
         }
         else
         {
