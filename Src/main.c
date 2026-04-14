@@ -31,6 +31,10 @@
 #include "stdlib.h"
 #include "random.h"
 #include "params.h"
+/* NTT profile 所需头文件 (需确保 ref/ 目录在工程 include path 中) */
+#include "../ref/ntt.h"
+#include "../ref/reduce.h"
+#include "../ref/poly.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +49,8 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+/* 将 int 系数归约到 [0, Q) 区间，用于模 Q 比较 */
+#define COEFF_MOD_Q(x) (((int)(x) % MLWQ_Q + MLWQ_Q) % MLWQ_Q)
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -121,6 +126,9 @@ int main(void)
   printf("=========================\r\n");
   printf("CMD: R=PRINT RANDOM\r\n");
   printf("CMD: L=RANDOM+LED FLASH\r\n");
+  printf("CMD: P=POLY UNIFORM\r\n");
+  printf("CMD: E=POLY ETA(CBD)\r\n");
+  printf("CMD: T=POLY+NTT PROFILE\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -175,6 +183,98 @@ int main(void)
             printf("%d ", p.coeffs[i]);
           }
           printf("\r\n\r\n");
+        }
+        else if(cmd == 'T' || cmd == 't')
+        {
+          // ---------------------------------------------------------------
+          // POLY+NTT PROFILE
+          // 使用 DWT CYCCNT (Cortex-M4) 计算各操作 cycle 数。
+          // 多项式全部声明为 static，避免压栈导致 HardFault。
+          // ---------------------------------------------------------------
+          printf("POLY+NTT PROFILE\r\n");
+
+          /* 启用 DWT 周期计数器 */
+          CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+          DWT->CYCCNT = 0;
+          DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+          /* 工作区：5 个 poly，全部静态分配以避免栈溢出 */
+          static poly a_poly, b_poly, add_poly, sub_poly, rt_poly;
+
+          /* ---- NTT 自检 ------------------------------------------------
+           * 不变式：invntt(ntt(a))[i] = a[i] * R  (mod Q)，R = 2^16
+           * 因此 montgomery_reduce(invntt(ntt(a))[i]) = a[i]  (mod Q)
+           * 运行 10 组随机向量，全部通过才报告 PASS。
+           * ---------------------------------------------------------------- */
+          {
+            static int16_t save[MLWQ_N]; /* 保存原始系数，static 避免压栈 */
+            int pass = 1;
+            for(int trial = 0; trial < 10; trial++)
+            {
+              int ok = 1;
+              random_poly_uniform(&rt_poly);
+
+              /* 保存原始系数 */
+              for(int i = 0; i < MLWQ_N; i++)
+                save[i] = rt_poly.coeffs[i];
+
+              /* 正向 NTT 再逆向 NTT */
+              ntt(rt_poly.coeffs);
+              invntt(rt_poly.coeffs);
+
+              /* 比较：从 Montgomery 域还原后应与原始值同余 (mod Q) */
+              for(int i = 0; i < MLWQ_N; i++)
+              {
+                int16_t got = montgomery_reduce((int32_t)rt_poly.coeffs[i]);
+                if(COEFF_MOD_Q(save[i]) != COEFF_MOD_Q(got)) { ok = 0; break; }
+              }
+              if(!ok) { pass = 0; break; }
+            }
+            printf("NTT pre-test (ntt->invntt): %s\r\n", pass ? "PASS" : "FAIL");
+          }
+
+          /* ---- 生成随机多项式用于 cycle profile ---- */
+          random_poly_uniform(&a_poly);
+          random_poly_uniform(&b_poly);
+
+          /* ---- Cycle profiling ---- */
+          uint32_t t0, cyc_add, cyc_sub, cyc_ntt, cyc_inv;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_add(&add_poly, &a_poly, &b_poly);
+          cyc_add = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_sub(&sub_poly, &a_poly, &b_poly);
+          cyc_sub = DWT->CYCCNT - t0;
+
+          rt_poly = a_poly;
+          t0 = DWT->CYCCNT;
+          ntt(rt_poly.coeffs);
+          cyc_ntt = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          invntt(rt_poly.coeffs);
+          cyc_inv = DWT->CYCCNT - t0;
+
+          /* 将 roundtrip 结果从 Montgomery 域还原为标准域，便于展示 */
+          for(int i = 0; i < MLWQ_N; i++)
+            rt_poly.coeffs[i] = montgomery_reduce((int32_t)rt_poly.coeffs[i]);
+
+          printf("cycles: add=%lu sub=%lu ntt=%lu invntt=%lu\r\n",
+                 (unsigned long)cyc_add, (unsigned long)cyc_sub,
+                 (unsigned long)cyc_ntt, (unsigned long)cyc_inv);
+
+          printf("workspace bytes: a=%u b=%u add=%u sub=%u ntt_rt=%u total=%u\r\n",
+                 (unsigned)sizeof(a_poly),   (unsigned)sizeof(b_poly),
+                 (unsigned)sizeof(add_poly), (unsigned)sizeof(sub_poly),
+                 (unsigned)sizeof(rt_poly),  (unsigned)(5u * sizeof(poly)));
+
+          printf("sample a/add/rt first 4: %d %d %d %d / %d %d %d %d / %d %d %d %d\r\n",
+                 a_poly.coeffs[0],   a_poly.coeffs[1],   a_poly.coeffs[2],   a_poly.coeffs[3],
+                 add_poly.coeffs[0], add_poly.coeffs[1], add_poly.coeffs[2], add_poly.coeffs[3],
+                 rt_poly.coeffs[0],  rt_poly.coeffs[1],  rt_poly.coeffs[2],  rt_poly.coeffs[3]);
+          printf("\r\n");
         }
         else
         {

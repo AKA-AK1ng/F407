@@ -32,6 +32,11 @@ static inline int16_t fqmul(int16_t a, int16_t b) {
 
 // -------------------------------------------------------------------------
 // 正向 NTT (Cooley-Tukey Butterfly)
+// 输入：标准域系数 r[i] ∈ Z_Q，任意顺序
+// 输出：NTT-Montgomery 域，比特翻转顺序
+//       每层蝴蝶使用 fqmul(zeta, x) = zeta*x*R^{-1} (mod Q)
+//       因 zeta 已存为 Montgomery 形式 (omega_i * R mod Q)，
+//       fqmul 的结果恰好等于 omega_i * x (mod Q)，无额外缩放。
 // -------------------------------------------------------------------------
 void ntt(int16_t r[256]) {
   unsigned int len, start, j, k;
@@ -54,11 +59,24 @@ void ntt(int16_t r[256]) {
 
 // -------------------------------------------------------------------------
 // 逆向 NTT (Gentleman-Sande Butterfly)
+// 输入：NTT-Montgomery 域系数（比特翻转顺序，由 ntt() 或 basemul() 产生）
+// 输出：Montgomery 时域，即 invntt(ntt(a))[i] = a[i] * R  (mod Q)
+//       其中 R = 2^16，MONT = R mod Q = 2285
+//       如需恢复标准域系数，对每个输出系数调用 montgomery_reduce()：
+//           a[i] = montgomery_reduce(invntt(ntt(a))[i])
+// 设计说明：
+//   f = 1441 = MONT^2 * 128^{-1} mod Q
+//   最终 fqmul(r, f) = r * R/128 (mod Q)，
+//   经过 7 层蝴蝶后的 Montgomery 缩放恰好与 f 相消，
+//   使多项式乘法结果正确：invntt(basemul(ntt(a),ntt(b))) = a*b mod (X^N+1, Q)
 // -------------------------------------------------------------------------
 void invntt(int16_t r[256]) {
   unsigned int start, len, j, k;
   int16_t t, zeta;
-  const int16_t f = 1441; // 128^-1 * R^2 mod Q (用于最后的归一化)
+  // f = MONT^2/128 mod Q = 1441
+  // 保证多项式乘法 invntt(basemul(ntt(a),ntt(b))) ≡ a*b (mod Q)
+  // 副作用：invntt(ntt(a))[i] ≡ a[i]*R (mod Q)，即输出在 Montgomery 域
+  const int16_t f = 1441;
 
   k = 127;
   for(len = 2; len <= 128; len <<= 1) {
@@ -74,7 +92,7 @@ void invntt(int16_t r[256]) {
     }
   }
 
-  // 最后的乘法：乘以 1/128 并转换回普通域
+  // 最后归一化：乘以 f = 1441 = MONT^2/128，等效于每系数乘以 R/128
   for(j = 0; j < 256; j++)
     r[j] = fqmul(r[j], f);
 }
