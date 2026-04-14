@@ -56,7 +56,7 @@
 // 串口接收变量（volatile：在ISR中修改、在主循环中读取，防止编译器优化导致主循环读不到变化）
 volatile uint8_t rx_buffer;        // 单字节接收缓存
 volatile uint8_t cmd_flag = 0;     // 指令有效标志（ISR置1，主循环清0）
-volatile char cmd;                 // 存储接收到的指令
+volatile uint8_t cmd;              // 存储接收到的指令（单字节原子访问）
 
 // RNG随机数变量
 uint32_t random_num;      // 存储32位硬件随机数
@@ -143,7 +143,7 @@ int main(void)
   printf("CMD: R = random_bytes(16)\r\n");
   printf("CMD: P = poly uniform\r\n");
   printf("CMD: E = poly eta (CBD)\r\n");
-  printf("CMD: X = all mlwq expand(xof)\r\n");
+  printf("CMD: X = XOF expand test (A,d_pk,d_u)\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -155,7 +155,7 @@ int main(void)
         cmd_flag = 0;
 
         // 调试：打印收到的原始字节（十六进制）及可打印字符，方便排查是否进入主循环
-        printf("RX: 0x%02X ('%c')\r\n", (uint8_t)cmd, isprint((unsigned char)cmd) ? cmd : '.');
+        printf("RX: 0x%02X ('%c')\r\n", (uint8_t)cmd, isprint((unsigned char)cmd) ? (char)cmd : '.');
 
         if(cmd == 'R' || cmd == 'r')
         {
@@ -218,6 +218,7 @@ int main(void)
           xof_seed_d_u_ext[SEEDBYTES] = 10;
 
           ref_xof_expand_matrix(&xof_A, xof_seed_A);
+          // modulus与mlwq.c保持一致：d_pk用q/P_PK，d_u用q/P_U
           ref_xof_expand_poly_vec(&xof_d_pk, xof_seed_d_pk_ext, MLWQ_Q / P_PK);
           ref_xof_expand_poly_vec(&xof_d_u, xof_seed_d_u_ext, MLWQ_Q / P_U);
 

@@ -35,6 +35,7 @@
 | `R` / `r` | 调用 `random_bytes(buf, 16)`，打印 16 字节随机数（十六进制） |
 | `P` / `p` | 调用 `random_poly_uniform(&p)`，打印多项式前 10 个系数 |
 | `E` / `e` | 调用 `random_poly_eta(&p)`（CBD 采样），打印多项式前 10 个系数 |
+| `X` / `x` | 一次性执行 `mlwq` 中所有 `expand` 相关 XOF 路径（`A`、`d_pk`、`d_u`），并打印样例系数与工作区大小 |
 | 其他字符   | 打印 `INVALID CMD` |
 
 串口助手直接发送单个字母（如 `R`），无需换行符。
@@ -46,7 +47,7 @@
 1. 上电后，`HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx_buffer, 1)` 启动 1 字节中断接收。
 2. 每收到 1 字节，进入 `HAL_UART_RxCpltCallback`：
    - **LED1（PF9）翻转**，每收到 1 字节闪烁一次，硬件可见。
-   - 将字节写入 `volatile char cmd`，置位 `volatile uint8_t cmd_flag`。
+   - 将字节写入 `volatile uint8_t cmd`，置位 `volatile uint8_t cmd_flag`。
    - 重新调用 `HAL_UART_Receive_IT` 以持续接收。
 3. 主循环检测 `cmd_flag`，打印 `RX: 0xXX ('X')` 调试信息，再根据命令执行对应操作。
 
