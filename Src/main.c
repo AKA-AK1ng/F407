@@ -293,7 +293,12 @@ int main(void)
           printf("workspace bytes: a=%u b=%u add=%u sub=%u ntt_rt=%u total=%u\r\n",
                  (unsigned)sizeof(a_poly),   (unsigned)sizeof(b_poly),
                  (unsigned)sizeof(add_poly), (unsigned)sizeof(sub_poly),
-                 (unsigned)sizeof(rt_poly),  (unsigned)(8u * sizeof(poly) + 3u * sizeof(poly_vec) + sizeof(poly_matrix) + SEEDBYTES));
+                 (unsigned)sizeof(rt_poly),
+                 (unsigned)(sizeof(a_poly) + sizeof(b_poly) + sizeof(add_poly) +
+                            sizeof(sub_poly) + sizeof(rt_poly) + sizeof(v_prof) +
+                            sizeof(s_t_u_prof) + sizeof(diff_prof) +
+                            sizeof(s_prof) + sizeof(u_prof) + sizeof(as_prof) +
+                            sizeof(A_prof) + sizeof(seed_A_prof)));
 
           printf("sample a/add/rt first 4: %d %d %d %d / %d %d %d %d / %d %d %d %d\r\n",
                  a_poly.coeffs[0],   a_poly.coeffs[1],   a_poly.coeffs[2],   a_poly.coeffs[3],
