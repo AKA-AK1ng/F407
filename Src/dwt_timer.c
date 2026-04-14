@@ -15,5 +15,6 @@ uint32_t dwt_timer_now(void)
 
 uint32_t dwt_timer_elapsed(uint32_t start, uint32_t end)
 {
+    // uint32_t 减法天然按模 2^32 运算，能正确覆盖 CYCCNT 回绕场景
     return end - start;
 }
