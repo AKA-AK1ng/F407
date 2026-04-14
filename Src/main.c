@@ -250,7 +250,8 @@ int main(void)
           random_poly_uniform(&v_prof);
 
           /* ---- Cycle profiling ---- */
-          uint32_t t0, cyc_add, cyc_sub, cyc_ntt, cyc_inv, cyc_as, cyc_vsu;
+          uint32_t t0, cyc_add, cyc_sub, cyc_ntt, cyc_inv, cyc_as;
+          uint32_t cyc_s_transpose_u, cyc_v_sub_stu, cyc_v_sub_su;
 
           t0 = DWT->CYCCNT;
           ref_poly_add(&add_poly, &a_poly, &b_poly);
@@ -274,11 +275,15 @@ int main(void)
           ref_poly_matrix_vec_mul(&as_prof, &A_prof, &s_prof);
           cyc_as = DWT->CYCCNT - t0;
 
-          /* Arith (v-su): 先算 s^T*u，再做 v - (s^T*u) */
+          /* Arith (v-su): 分别计时 s^T*u 与 v-(s^T*u)，并给出总计 */
           t0 = DWT->CYCCNT;
           ref_poly_vec_transpose_mul(&s_t_u_prof, &s_prof, &u_prof);
+          cyc_s_transpose_u = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
           ref_poly_sub(&diff_prof, &v_prof, &s_t_u_prof);
-          cyc_vsu = DWT->CYCCNT - t0;
+          cyc_v_sub_stu = DWT->CYCCNT - t0;
+          cyc_v_sub_su = cyc_s_transpose_u + cyc_v_sub_stu;
 
           /* 将 roundtrip 结果从 Montgomery 域还原为标准域，便于展示 */
           for(int i = 0; i < MLWQ_N; i++)
@@ -287,8 +292,9 @@ int main(void)
           printf("cycles: add=%lu sub=%lu ntt=%lu invntt=%lu\r\n",
                  (unsigned long)cyc_add, (unsigned long)cyc_sub,
                  (unsigned long)cyc_ntt, (unsigned long)cyc_inv);
-          printf("cycles arith: A*s=%lu v-su=%lu\r\n",
-                 (unsigned long)cyc_as, (unsigned long)cyc_vsu);
+          printf("cycles arith: A*s=%lu v-su=%lu (sTu=%lu sub=%lu)\r\n",
+                 (unsigned long)cyc_as, (unsigned long)cyc_v_sub_su,
+                 (unsigned long)cyc_s_transpose_u, (unsigned long)cyc_v_sub_stu);
 
           printf("workspace bytes: a=%u b=%u add=%u sub=%u ntt_rt=%u total=%u\r\n",
                  (unsigned)sizeof(a_poly),   (unsigned)sizeof(b_poly),
