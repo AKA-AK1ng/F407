@@ -50,7 +50,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-/* 将 int 系数归约到 [0, Q) 区间，用于模 Q 比较 */
+/* 将 int 系数归约到 [0, Q) 区间，用于模 Q 比较（仅测试/校验路径） */
 #define COEFF_MOD_Q(x) (((int)(x) % MLWQ_Q + MLWQ_Q) % MLWQ_Q)
 #define DITHER_DOMAIN_SEPARATOR 0xFFu
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
@@ -419,7 +419,8 @@ int main(void)
           // 构造可解密的 ct（不计入 breakdown）
           for(int i = 0; i < MLWQ_K; i++) {
             /* 这里使用 zero dither，仅用于构造稳定可解密样本，不参与分项计时 */
-            /* zero dither is used only to build a stable decryptable sample for profiling */
+            /* zero dither is used only to build a stable decryptable sample for profiling
+               (keeps data generation deterministic; does not affect timed sub-components) */
             ref_poly_quantize(&ct_prof.u.vec[i], &Atr_prof.vec[i], &zero_poly, P_U);
           }
           ref_poly_msg_encode(&m_poly_prof, msg_in);
