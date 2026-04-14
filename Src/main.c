@@ -322,6 +322,7 @@ int main(void)
           // ---------------------------------------------------------------
           // MLWQ Cycle Breakdown Profile (KeyGen / Encrypt / Decrypt)
           // 仅统计 Scalar 路径子组件，口径对齐为 Cortex-M4 单平台分解。
+          // Scalar-only component breakdown on Cortex-M4 (no cross-platform/AVX2 comparison).
           // ---------------------------------------------------------------
           printf("MLWQ CYCLE BREAKDOWN PROFILE\r\n");
 
@@ -417,6 +418,7 @@ int main(void)
           // 构造可解密的 ct（不计入 breakdown）
           for(int i = 0; i < MLWQ_K; i++) {
             /* 这里使用 zero dither，仅用于构造稳定可解密样本，不参与分项计时 */
+            /* zero dither is used only to build a stable decryptable sample for profiling */
             ref_poly_quantize(&ct_prof.u.vec[i], &Atr_prof.vec[i], &zero_poly, P_U);
           }
           ref_poly_msg_encode(&m_poly_prof, msg_in);
