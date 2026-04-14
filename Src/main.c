@@ -35,6 +35,7 @@
 #include "../ref/ntt.h"
 #include "../ref/reduce.h"
 #include "../ref/poly.h"
+#include "../ref/xof.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -198,8 +199,12 @@ int main(void)
           DWT->CYCCNT = 0;
           DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 
-          /* 工作区：5 个 poly，全部静态分配以避免栈溢出 */
+          /* 工作区：全部 static，避免压栈导致 HardFault */
           static poly a_poly, b_poly, add_poly, sub_poly, rt_poly;
+          static poly v_prof, s_t_u_prof, diff_prof;
+          static poly_vec s_prof, u_prof, as_prof;
+          static poly_matrix A_prof;
+          static uint8_t seed_A_prof[SEEDBYTES];
 
           /* ---- NTT 自检 ------------------------------------------------
            * 不变式：invntt(ntt(a))[i] = a[i] * R  (mod Q)，R = 2^16
@@ -237,8 +242,15 @@ int main(void)
           random_poly_uniform(&a_poly);
           random_poly_uniform(&b_poly);
 
+          /* ---- 生成 A,s,u,v 用于 Arith cycle profile ---- */
+          random_bytes(seed_A_prof, SEEDBYTES);
+          ref_xof_expand_matrix(&A_prof, seed_A_prof);
+          random_poly_vec_eta(&s_prof);
+          random_poly_vec_eta(&u_prof);
+          random_poly_uniform(&v_prof);
+
           /* ---- Cycle profiling ---- */
-          uint32_t t0, cyc_add, cyc_sub, cyc_ntt, cyc_inv;
+          uint32_t t0, cyc_add, cyc_sub, cyc_ntt, cyc_inv, cyc_as, cyc_vsu;
 
           t0 = DWT->CYCCNT;
           ref_poly_add(&add_poly, &a_poly, &b_poly);
@@ -257,6 +269,17 @@ int main(void)
           invntt(rt_poly.coeffs);
           cyc_inv = DWT->CYCCNT - t0;
 
+          /* Arith (A*s): 矩阵向量乘（核心 PKE 算术热点） */
+          t0 = DWT->CYCCNT;
+          ref_poly_matrix_vec_mul(&as_prof, &A_prof, &s_prof);
+          cyc_as = DWT->CYCCNT - t0;
+
+          /* Arith (v-su): 先算 s^T*u，再做 v - (s^T*u) */
+          t0 = DWT->CYCCNT;
+          ref_poly_vec_transpose_mul(&s_t_u_prof, &s_prof, &u_prof);
+          ref_poly_sub(&diff_prof, &v_prof, &s_t_u_prof);
+          cyc_vsu = DWT->CYCCNT - t0;
+
           /* 将 roundtrip 结果从 Montgomery 域还原为标准域，便于展示 */
           for(int i = 0; i < MLWQ_N; i++)
             rt_poly.coeffs[i] = montgomery_reduce((int32_t)rt_poly.coeffs[i]);
@@ -264,11 +287,13 @@ int main(void)
           printf("cycles: add=%lu sub=%lu ntt=%lu invntt=%lu\r\n",
                  (unsigned long)cyc_add, (unsigned long)cyc_sub,
                  (unsigned long)cyc_ntt, (unsigned long)cyc_inv);
+          printf("cycles arith: A*s=%lu v-su=%lu\r\n",
+                 (unsigned long)cyc_as, (unsigned long)cyc_vsu);
 
           printf("workspace bytes: a=%u b=%u add=%u sub=%u ntt_rt=%u total=%u\r\n",
                  (unsigned)sizeof(a_poly),   (unsigned)sizeof(b_poly),
                  (unsigned)sizeof(add_poly), (unsigned)sizeof(sub_poly),
-                 (unsigned)sizeof(rt_poly),  (unsigned)(5u * sizeof(poly)));
+                 (unsigned)sizeof(rt_poly),  (unsigned)(8u * sizeof(poly) + 3u * sizeof(poly_vec) + sizeof(poly_matrix) + SEEDBYTES));
 
           printf("sample a/add/rt first 4: %d %d %d %d / %d %d %d %d / %d %d %d %d\r\n",
                  a_poly.coeffs[0],   a_poly.coeffs[1],   a_poly.coeffs[2],   a_poly.coeffs[3],
