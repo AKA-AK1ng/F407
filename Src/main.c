@@ -341,6 +341,7 @@ int main(void)
 
           static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES], seed_s[SEEDBYTES];
           static uint8_t msg_in[32], msg_out[32], d_seed[33];
+          const char *sep_line = "----------------------------------------------------------------------------------------------\r\n";
 
           uint32_t t0;
           uint32_t cyc_key_genA, cyc_key_sample_s, cyc_key_gendither, cyc_key_arith_as, cyc_key_quantize;
@@ -367,7 +368,7 @@ int main(void)
           cyc_key_sample_s = DWT->CYCCNT - t0;
 
           for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_d[i];
-          d_seed[32] = 0xFF;
+          d_seed[SEEDBYTES] = 0xFF;
           t0 = DWT->CYCCNT;
           ref_xof_expand_poly_vec(&d_pk_prof, d_seed, MLWQ_Q / P_PK);
           cyc_key_gendither = DWT->CYCCNT - t0;
@@ -385,6 +386,9 @@ int main(void)
           for(int i = 0; i < SEEDBYTES; i++) {
             pk_prof.seed_A[i] = seed_A[i];
             pk_prof.seed_d[i] = seed_d[i];
+          }
+          for(int i = 0; i < MLWQ_N; i++) {
+            zero_poly.coeffs[i] = 0;
           }
 
           // -------------------------------
@@ -440,24 +444,24 @@ int main(void)
           ref_poly_msg_decode(msg_out, &diff_prof);
           cyc_dec_decode = DWT->CYCCNT - t0;
 
-          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("%s", sep_line);
           printf(" PKE KeyGen Breakdown (Cortex-M4 Scalar)\r\n");
-          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("%s", sep_line);
           printf("GenMatrix (A): %lu\r\n", (unsigned long)cyc_key_genA);
           printf("Sample (s): %lu\r\n", (unsigned long)cyc_key_sample_s);
           printf("GenDither: %lu\r\n", (unsigned long)cyc_key_gendither);
           printf("Arith (A*s): %lu\r\n", (unsigned long)cyc_key_arith_as);
           printf("Quantize: %lu\r\n", (unsigned long)cyc_key_quantize);
 
-          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("%s", sep_line);
           printf(" PKE Encrypt Breakdown (Cortex-M4 Scalar)\r\n");
-          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("%s", sep_line);
           printf("Arith (u): %lu\r\n", (unsigned long)cyc_enc_arith_u);
           printf("Arith (v): %lu\r\n", (unsigned long)cyc_enc_arith_v);
 
-          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("%s", sep_line);
           printf(" PKE Decrypt Breakdown (Cortex-M4 Scalar)\r\n");
-          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("%s", sep_line);
           printf("DeQuantize: %lu\r\n", (unsigned long)cyc_dec_deq);
           printf("Arith (v-su): %lu (sTu=%lu sub=%lu)\r\n",
                  (unsigned long)cyc_dec_arith_vsu,
