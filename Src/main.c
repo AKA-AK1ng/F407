@@ -368,6 +368,7 @@ int main(void)
           cyc_key_sample_s = DWT->CYCCNT - t0;
 
           for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_d[i];
+          /* 与 keygen 实现一致：追加 0xFF 作为 dither 域分离字节 */
           d_seed[SEEDBYTES] = 0xFF;
           t0 = DWT->CYCCNT;
           ref_xof_expand_poly_vec(&d_pk_prof, d_seed, MLWQ_Q / P_PK);
@@ -415,6 +416,7 @@ int main(void)
 
           // 构造可解密的 ct（不计入 breakdown）
           for(int i = 0; i < MLWQ_K; i++) {
+            /* 这里使用 zero dither，仅用于构造稳定可解密样本，不参与分项计时 */
             ref_poly_quantize(&ct_prof.u.vec[i], &Atr_prof.vec[i], &zero_poly, P_U);
           }
           ref_poly_msg_encode(&m_poly_prof, msg_in);
