@@ -64,7 +64,7 @@ uint32_t random_num;      // 存储32位硬件随机数
 // 命令处理工作区（避免在主循环分支里创建大栈变量导致潜在栈溢出）
 static poly cmd_poly;
 
-// XOF测试工作区：提前按mlwq中expand的参数路径预留，避免命令分支里大栈分配
+// XOF测试工作区：提前按MLWQ（见ref/mlwq.c）中expand参数路径预留，避免命令分支里大栈分配
 static poly_matrix xof_A;
 static poly_vec xof_d_pk;
 static poly_vec xof_d_u;
@@ -218,7 +218,7 @@ int main(void)
           xof_seed_d_u_ext[SEEDBYTES] = 10;
 
           ref_xof_expand_matrix(&xof_A, xof_seed_A);
-          // modulus与mlwq.c保持一致：d_pk用q/P_PK，d_u用q/P_U
+          // modulus与ref/mlwq.c保持一致：d_pk用q/P_PK，d_u用q/P_U
           ref_xof_expand_poly_vec(&xof_d_pk, xof_seed_d_pk_ext, MLWQ_Q / P_PK);
           ref_xof_expand_poly_vec(&xof_d_u, xof_seed_d_u_ext, MLWQ_Q / P_U);
 
@@ -235,7 +235,7 @@ int main(void)
           for(int i=0; i<8; i++) printf("%d ", xof_d_u.vec[0].coeffs[i]);
           printf("\r\n");
 
-          printf("WS bytes: A=%lu d_pk=%lu d_u=%lu total=%lu\r\n\r\n",
+          printf("Workspace bytes: A=%lu d_pk=%lu d_u=%lu total=%lu\r\n\r\n",
                  (unsigned long)sizeof(xof_A),
                  (unsigned long)sizeof(xof_d_pk),
                  (unsigned long)sizeof(xof_d_u),
