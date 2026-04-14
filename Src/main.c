@@ -130,6 +130,7 @@ int main(void)
   printf("CMD: P=POLY UNIFORM\r\n");
   printf("CMD: E=POLY ETA(CBD)\r\n");
   printf("CMD: T=POLY+NTT PROFILE\r\n");
+  printf("CMD: M=MLWQ CYCLE BREAKDOWN\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -315,6 +316,154 @@ int main(void)
                  add_poly.coeffs[0], add_poly.coeffs[1], add_poly.coeffs[2], add_poly.coeffs[3],
                  rt_poly.coeffs[0],  rt_poly.coeffs[1],  rt_poly.coeffs[2],  rt_poly.coeffs[3]);
           printf("\r\n");
+        }
+        else if(cmd == 'M' || cmd == 'm')
+        {
+          // ---------------------------------------------------------------
+          // MLWQ Cycle Breakdown Profile (KeyGen / Encrypt / Decrypt)
+          // 仅统计 Scalar 路径子组件，口径对齐为 Cortex-M4 单平台分解。
+          // ---------------------------------------------------------------
+          printf("MLWQ CYCLE BREAKDOWN PROFILE\r\n");
+
+          /* 启用 DWT 周期计数器 */
+          CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+          DWT->CYCCNT = 0;
+          DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+          /* 全部 static，避免大对象压栈 */
+          static mlwq_pk pk_prof;
+          static mlwq_sk sk_prof;
+          static mlwq_ciphertext ct_prof;
+
+          static poly_matrix A_prof, At_prof;
+          static poly_vec As_prof, d_pk_prof, r_prof, Atr_prof, b_deq_prof, u_deq_prof;
+          static poly d_v_prof, v_val_prof, m_poly_prof, v_final_prof, v_deq_prof, s_t_u_prof, diff_prof, zero_poly;
+
+          static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES], seed_s[SEEDBYTES];
+          static uint8_t msg_in[32], msg_out[32], d_seed[33];
+
+          uint32_t t0;
+          uint32_t cyc_key_genA, cyc_key_sample_s, cyc_key_gendither, cyc_key_arith_as, cyc_key_quantize;
+          uint32_t cyc_enc_arith_u, cyc_enc_arith_v;
+          uint32_t cyc_dec_deq, cyc_dec_arith_vsu, cyc_dec_decode, cyc_dec_sTu, cyc_dec_sub;
+
+          random_bytes(seed_A, SEEDBYTES);
+          random_bytes(seed_d, SEEDBYTES);
+          random_bytes(seed_ct, SEEDBYTES);
+          random_bytes(msg_in, sizeof(msg_in));
+
+          // -------------------------------
+          // KeyGen Breakdown
+          // -------------------------------
+          t0 = DWT->CYCCNT;
+          ref_xof_expand_matrix(&A_prof, seed_A);
+          cyc_key_genA = DWT->CYCCNT - t0;
+
+          random_bytes(seed_s, SEEDBYTES);
+          t0 = DWT->CYCCNT;
+          for(int i = 0; i < MLWQ_K; i++) {
+            ref_poly_getnoise_eta1(&sk_prof.s.vec[i], seed_s, (uint8_t)i);
+          }
+          cyc_key_sample_s = DWT->CYCCNT - t0;
+
+          for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_d[i];
+          d_seed[32] = 0xFF;
+          t0 = DWT->CYCCNT;
+          ref_xof_expand_poly_vec(&d_pk_prof, d_seed, MLWQ_Q / P_PK);
+          cyc_key_gendither = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_matrix_vec_mul(&As_prof, &A_prof, &sk_prof.s);
+          cyc_key_arith_as = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          for(int i = 0; i < MLWQ_K; i++) {
+            ref_poly_quantize(&pk_prof.b_q.vec[i], &As_prof.vec[i], &d_pk_prof.vec[i], P_PK);
+          }
+          cyc_key_quantize = DWT->CYCCNT - t0;
+
+          for(int i = 0; i < SEEDBYTES; i++) {
+            pk_prof.seed_A[i] = seed_A[i];
+            pk_prof.seed_d[i] = seed_d[i];
+          }
+
+          // -------------------------------
+          // Encrypt Breakdown (Arith only)
+          // -------------------------------
+          ref_xof_expand_matrix(&A_prof, pk_prof.seed_A);
+          for(int i = 0; i < MLWQ_K; i++) {
+            ref_poly_getnoise_eta1(&r_prof.vec[i], seed_ct, (uint8_t)i);
+            ref_poly_dequantize(&b_deq_prof.vec[i], &pk_prof.b_q.vec[i], P_PK);
+          }
+          for(int i = 0; i < MLWQ_K; i++) {
+            for(int j = 0; j < MLWQ_K; j++) {
+              At_prof.row[i].vec[j] = A_prof.row[j].vec[i];
+            }
+          }
+
+          t0 = DWT->CYCCNT;
+          ref_poly_matrix_vec_mul(&Atr_prof, &At_prof, &r_prof);
+          cyc_enc_arith_u = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_vec_transpose_mul(&v_val_prof, &b_deq_prof, &r_prof);
+          cyc_enc_arith_v = DWT->CYCCNT - t0;
+
+          // 构造可解密的 ct（不计入 breakdown）
+          for(int i = 0; i < MLWQ_K; i++) {
+            ref_poly_quantize(&ct_prof.u.vec[i], &Atr_prof.vec[i], &zero_poly, P_U);
+          }
+          ref_poly_msg_encode(&m_poly_prof, msg_in);
+          ref_poly_add(&v_final_prof, &v_val_prof, &m_poly_prof);
+          ref_poly_quantize(&ct_prof.v, &v_final_prof, &d_v_prof, P_V);
+
+          // -------------------------------
+          // Decrypt Breakdown
+          // -------------------------------
+          t0 = DWT->CYCCNT;
+          for(int i = 0; i < MLWQ_K; i++) {
+            ref_poly_dequantize(&u_deq_prof.vec[i], &ct_prof.u.vec[i], P_U);
+          }
+          ref_poly_dequantize(&v_deq_prof, &ct_prof.v, P_V);
+          cyc_dec_deq = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_vec_transpose_mul(&s_t_u_prof, &sk_prof.s, &u_deq_prof);
+          cyc_dec_sTu = DWT->CYCCNT - t0;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_sub(&diff_prof, &v_deq_prof, &s_t_u_prof);
+          cyc_dec_sub = DWT->CYCCNT - t0;
+          cyc_dec_arith_vsu = cyc_dec_sTu + cyc_dec_sub;
+
+          t0 = DWT->CYCCNT;
+          ref_poly_msg_decode(msg_out, &diff_prof);
+          cyc_dec_decode = DWT->CYCCNT - t0;
+
+          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf(" PKE KeyGen Breakdown (Cortex-M4 Scalar)\r\n");
+          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("GenMatrix (A): %lu\r\n", (unsigned long)cyc_key_genA);
+          printf("Sample (s): %lu\r\n", (unsigned long)cyc_key_sample_s);
+          printf("GenDither: %lu\r\n", (unsigned long)cyc_key_gendither);
+          printf("Arith (A*s): %lu\r\n", (unsigned long)cyc_key_arith_as);
+          printf("Quantize: %lu\r\n", (unsigned long)cyc_key_quantize);
+
+          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf(" PKE Encrypt Breakdown (Cortex-M4 Scalar)\r\n");
+          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("Arith (u): %lu\r\n", (unsigned long)cyc_enc_arith_u);
+          printf("Arith (v): %lu\r\n", (unsigned long)cyc_enc_arith_v);
+
+          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf(" PKE Decrypt Breakdown (Cortex-M4 Scalar)\r\n");
+          printf("----------------------------------------------------------------------------------------------\r\n");
+          printf("DeQuantize: %lu\r\n", (unsigned long)cyc_dec_deq);
+          printf("Arith (v-su): %lu (sTu=%lu sub=%lu)\r\n",
+                 (unsigned long)cyc_dec_arith_vsu,
+                 (unsigned long)cyc_dec_sTu,
+                 (unsigned long)cyc_dec_sub);
+          printf("Decode: %lu\r\n\r\n", (unsigned long)cyc_dec_decode);
         }
         else
         {
