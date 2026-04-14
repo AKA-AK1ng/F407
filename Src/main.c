@@ -29,8 +29,10 @@
 #include "stdio.h"  // 用于printf
 #include "ctype.h"
 #include "stdlib.h"
+#include "string.h"
 #include "random.h"
 #include "params.h"
+#include "xof.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,6 +63,16 @@ uint32_t random_num;      // 存储32位硬件随机数
 
 // 命令处理工作区（避免在主循环分支里创建大栈变量导致潜在栈溢出）
 static poly cmd_poly;
+
+// XOF测试工作区：提前按mlwq中expand的参数路径预留，避免命令分支里大栈分配
+static poly_matrix xof_A;
+static poly_vec xof_d_pk;
+static poly_vec xof_d_u;
+static uint8_t xof_seed_A[SEEDBYTES];
+static uint8_t xof_seed_d[SEEDBYTES];
+static uint8_t xof_seed_ct[SEEDBYTES];
+static uint8_t xof_seed_d_pk_ext[SEEDBYTES + 1];
+static uint8_t xof_seed_d_u_ext[SEEDBYTES + 1];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -131,6 +143,7 @@ int main(void)
   printf("CMD: R = random_bytes(16)\r\n");
   printf("CMD: P = poly uniform\r\n");
   printf("CMD: E = poly eta (CBD)\r\n");
+  printf("CMD: X = all mlwq expand(xof)\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -186,6 +199,46 @@ int main(void)
             printf("%d ", cmd_poly.coeffs[i]);
           }
           printf("\r\n\r\n");
+        }
+        else if(cmd == 'X' || cmd == 'x')
+        {
+          // --------------------------
+          // 测试XOF：一次性覆盖mlwq里所有expand入口参数
+          // 1) A:    expand_matrix(seed_A)
+          // 2) d_pk: expand_poly_vec(seed_d||0xFF, q/P_PK)
+          // 3) d_u:  expand_poly_vec(seed_ct||10, q/P_U)
+          // --------------------------
+          random_bytes(xof_seed_A, SEEDBYTES);
+          random_bytes(xof_seed_d, SEEDBYTES);
+          random_bytes(xof_seed_ct, SEEDBYTES);
+
+          memcpy(xof_seed_d_pk_ext, xof_seed_d, SEEDBYTES);
+          xof_seed_d_pk_ext[SEEDBYTES] = 0xFF;
+          memcpy(xof_seed_d_u_ext, xof_seed_ct, SEEDBYTES);
+          xof_seed_d_u_ext[SEEDBYTES] = 10;
+
+          ref_xof_expand_matrix(&xof_A, xof_seed_A);
+          ref_xof_expand_poly_vec(&xof_d_pk, xof_seed_d_pk_ext, MLWQ_Q / P_PK);
+          ref_xof_expand_poly_vec(&xof_d_u, xof_seed_d_u_ext, MLWQ_Q / P_U);
+
+          printf("XOF ALL EXPAND DONE\r\n");
+          printf("A[0][0] first 8: ");
+          for(int i=0; i<8; i++) printf("%d ", xof_A.row[0].vec[0].coeffs[i]);
+          printf("\r\n");
+
+          printf("d_pk[0] first 8: ");
+          for(int i=0; i<8; i++) printf("%d ", xof_d_pk.vec[0].coeffs[i]);
+          printf("\r\n");
+
+          printf("d_u[0] first 8: ");
+          for(int i=0; i<8; i++) printf("%d ", xof_d_u.vec[0].coeffs[i]);
+          printf("\r\n");
+
+          printf("WS bytes: A=%lu d_pk=%lu d_u=%lu total=%lu\r\n\r\n",
+                 (unsigned long)sizeof(xof_A),
+                 (unsigned long)sizeof(xof_d_pk),
+                 (unsigned long)sizeof(xof_d_u),
+                 (unsigned long)(sizeof(xof_A) + sizeof(xof_d_pk) + sizeof(xof_d_u)));
         }
         else
         {
