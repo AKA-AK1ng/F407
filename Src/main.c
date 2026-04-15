@@ -32,6 +32,19 @@
 #include "../ref/poly.h"
 #include "../ref/xof.h"
 #include "../ref/mlwq.h"
+#if defined(BENCH_KYBER512)
+#include "../kyber_ref/api.h"
+#endif
+
+#if defined(BENCH_SABER_L3)
+int crypto_kem_keypair(unsigned char *pk, unsigned char *sk);
+int crypto_kem_enc(unsigned char *ct, unsigned char *ss, const unsigned char *pk);
+int crypto_kem_dec(unsigned char *ss, const unsigned char *ct, const unsigned char *sk);
+#define SABER_L3_PUBLICKEYBYTES 992u
+#define SABER_L3_SECRETKEYBYTES 2304u
+#define SABER_L3_CIPHERTEXTBYTES 1088u
+#define SABER_L3_SSBYTES 32u
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +62,10 @@
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
 #define MLWQ_BENCH_ROUNDS 1000u
 #define MLWQ_BENCH_PROGRESS_STEP 100u
+
+#if defined(BENCH_KYBER512) && defined(BENCH_SABER_L3)
+#error "Only one external benchmark can be enabled at a time."
+#endif
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -65,6 +82,14 @@ char cmd;                 // 存储接收到的指令
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void run_mlwq_benchmark(void);
+static void run_kem_comparison_benchmark(void);
+static void enable_cycle_counter(void);
+#if defined(BENCH_KYBER512)
+static void run_kyber_benchmark(uint32_t rounds, uint64_t *keygen_total, uint64_t *encaps_total, uint64_t *decaps_total, uint32_t *mismatch_count);
+#endif
+#if defined(BENCH_SABER_L3)
+static void run_saber_benchmark(uint32_t rounds, uint64_t *keygen_total, uint64_t *encaps_total, uint64_t *decaps_total, uint32_t *mismatch_count);
+#endif
 
 /* USER CODE END PFP */
 
@@ -125,9 +150,152 @@ typedef struct {
   uint32_t kem_mismatch_count;
 } mlwq_bench_totals_t;
 
+typedef struct {
+  const char *name;
+  uint64_t keygen_cycles;
+  uint64_t encaps_cycles;
+  uint64_t decaps_cycles;
+  uint32_t mismatch_count;
+} kem_summary_t;
+
 static uint64_t bench_avg(uint64_t total)
 {
   return total / MLWQ_BENCH_ROUNDS;
+}
+
+static void enable_cycle_counter(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static void run_mlwq_kem_benchmark(uint32_t rounds,
+                                   uint64_t *keygen_total,
+                                   uint64_t *encaps_total,
+                                   uint64_t *decaps_total,
+                                   uint32_t *mismatch_count)
+{
+  static mlwq_pk pk;
+  static mlwq_kem_sk sk;
+  static mlwq_ciphertext ct;
+  static uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
+  uint32_t t0;
+  int dec_ok;
+
+  *keygen_total = 0;
+  *encaps_total = 0;
+  *decaps_total = 0;
+  *mismatch_count = 0;
+
+  for(uint32_t round = 0; round < rounds; round++)
+  {
+    t0 = DWT->CYCCNT;
+    ref_mlwq_kem_keygen(&pk, &sk);
+    *keygen_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    ref_mlwq_kem_encaps(&ct, ss1, &pk);
+    *encaps_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    dec_ok = ref_mlwq_kem_decaps(ss2, &sk, &ct);
+    *decaps_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    if((dec_ok == 0) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
+      (*mismatch_count)++;
+    }
+  }
+}
+
+#if defined(BENCH_KYBER512)
+static void run_kyber_benchmark(uint32_t rounds,
+                                uint64_t *keygen_total,
+                                uint64_t *encaps_total,
+                                uint64_t *decaps_total,
+                                uint32_t *mismatch_count)
+{
+  static uint8_t pk[pqcrystals_kyber512_ref_PUBLICKEYBYTES];
+  static uint8_t sk[pqcrystals_kyber512_ref_SECRETKEYBYTES];
+  static uint8_t ct[pqcrystals_kyber512_ref_CIPHERTEXTBYTES];
+  static uint8_t ss1[pqcrystals_kyber512_ref_BYTES], ss2[pqcrystals_kyber512_ref_BYTES];
+  uint32_t t0;
+  int dec_ret;
+
+  *keygen_total = 0;
+  *encaps_total = 0;
+  *decaps_total = 0;
+  *mismatch_count = 0;
+
+  for(uint32_t round = 0; round < rounds; round++)
+  {
+    t0 = DWT->CYCCNT;
+    (void)pqcrystals_kyber512_ref_keypair(pk, sk);
+    *keygen_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    (void)pqcrystals_kyber512_ref_enc(ct, ss1, pk);
+    *encaps_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    dec_ret = pqcrystals_kyber512_ref_dec(ss2, ct, sk);
+    *decaps_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    if((dec_ret != 0) || (memcmp(ss1, ss2, pqcrystals_kyber512_ref_BYTES) != 0)) {
+      (*mismatch_count)++;
+    }
+  }
+}
+#endif
+
+#if defined(BENCH_SABER_L3)
+static void run_saber_benchmark(uint32_t rounds,
+                                uint64_t *keygen_total,
+                                uint64_t *encaps_total,
+                                uint64_t *decaps_total,
+                                uint32_t *mismatch_count)
+{
+  static unsigned char pk[SABER_L3_PUBLICKEYBYTES];
+  static unsigned char sk[SABER_L3_SECRETKEYBYTES];
+  static unsigned char ct[SABER_L3_CIPHERTEXTBYTES];
+  static unsigned char ss1[SABER_L3_SSBYTES], ss2[SABER_L3_SSBYTES];
+  uint32_t t0;
+  int dec_ret;
+
+  *keygen_total = 0;
+  *encaps_total = 0;
+  *decaps_total = 0;
+  *mismatch_count = 0;
+
+  for(uint32_t round = 0; round < rounds; round++)
+  {
+    t0 = DWT->CYCCNT;
+    (void)crypto_kem_keypair(pk, sk);
+    *keygen_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    (void)crypto_kem_enc(ct, ss1, pk);
+    *encaps_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    dec_ret = crypto_kem_dec(ss2, ct, sk);
+    *decaps_total += (uint64_t)(DWT->CYCCNT - t0);
+
+    if((dec_ret != 0) || (memcmp(ss1, ss2, SABER_L3_SSBYTES) != 0)) {
+      (*mismatch_count)++;
+    }
+  }
+}
+#endif
+
+static void print_kem_summary_row(const kem_summary_t *summary, uint32_t rounds)
+{
+  printf("%-12s | %12lu | %12lu | %12lu | %8lu\r\n",
+         summary->name,
+         (unsigned long)(summary->keygen_cycles / rounds),
+         (unsigned long)(summary->encaps_cycles / rounds),
+         (unsigned long)(summary->decaps_cycles / rounds),
+         (unsigned long)summary->mismatch_count);
 }
 
 static void print_data_sizes(void)
@@ -366,10 +534,7 @@ static void run_mlwq_benchmark(void)
   printf("ENC=[GenMatrix/Sample/GenDither/Arith(u)/Arith(v)/Quantize(u)] DEC=[DeQuant/Arith/Decode] ");
   printf("KEM=[KeyGen/Encaps/Decaps]\r\n");
 
-  /* 启用 DWT 周期计数器 */
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0;
-  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+  enable_cycle_counter();
 
   for(uint32_t round = 0; round < MLWQ_BENCH_ROUNDS; round++)
   {
@@ -442,6 +607,51 @@ static void run_mlwq_benchmark(void)
   printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)totals.kem_mismatch_count);
   printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
+
+static void run_kem_comparison_benchmark(void)
+{
+  kem_summary_t mlwq_summary = {"MLWQ", 0, 0, 0, 0};
+#if defined(BENCH_KYBER512)
+  kem_summary_t ext_summary = {"Kyber512", 0, 0, 0, 0};
+#elif defined(BENCH_SABER_L3)
+  kem_summary_t ext_summary = {"Saber(L3)", 0, 0, 0, 0};
+#endif
+
+  printf("\r\n=== KEM Cycles Quick Comparison (%lu rounds) ===\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  enable_cycle_counter();
+
+  run_mlwq_kem_benchmark(MLWQ_BENCH_ROUNDS,
+                         &mlwq_summary.keygen_cycles,
+                         &mlwq_summary.encaps_cycles,
+                         &mlwq_summary.decaps_cycles,
+                         &mlwq_summary.mismatch_count);
+
+#if defined(BENCH_KYBER512)
+  run_kyber_benchmark(MLWQ_BENCH_ROUNDS,
+                      &ext_summary.keygen_cycles,
+                      &ext_summary.encaps_cycles,
+                      &ext_summary.decaps_cycles,
+                      &ext_summary.mismatch_count);
+#elif defined(BENCH_SABER_L3)
+  run_saber_benchmark(MLWQ_BENCH_ROUNDS,
+                      &ext_summary.keygen_cycles,
+                      &ext_summary.encaps_cycles,
+                      &ext_summary.decaps_cycles,
+                      &ext_summary.mismatch_count);
+#endif
+
+  printf("%s", PROFILE_SEPARATOR);
+  printf("%-12s | %-12s | %-12s | %-12s | %-8s\r\n",
+         "Scheme", "KeyGen", "Encaps", "Decaps", "Mismatch");
+  printf("%s", PROFILE_SEPARATOR);
+  print_kem_summary_row(&mlwq_summary, MLWQ_BENCH_ROUNDS);
+#if defined(BENCH_KYBER512) || defined(BENCH_SABER_L3)
+  print_kem_summary_row(&ext_summary, MLWQ_BENCH_ROUNDS);
+#else
+  printf("%s\r\n", "External bench disabled. Define BENCH_KYBER512 or BENCH_SABER_L3 at build time.");
+#endif
+  printf("%s\r\n", PROFILE_SEPARATOR);
+}
 /* USER CODE END 0 */
 
 /**
@@ -470,6 +680,14 @@ int main(void)
   printf("  MLWQ TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
   printf("CMD: M=RUN COMPREHENSIVE SCALAR BENCHMARK (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("CMD: C=RUN KEM CYCLE COMPARISON TABLE (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+#if defined(BENCH_KYBER512)
+  printf("BUILD FLAG: BENCH_KYBER512 (external benchmark enabled)\r\n");
+#elif defined(BENCH_SABER_L3)
+  printf("BUILD FLAG: BENCH_SABER_L3 (external benchmark enabled)\r\n");
+#else
+  printf("BUILD FLAG: none (only MLWQ in comparison table)\r\n");
+#endif
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -484,9 +702,13 @@ int main(void)
       {
         run_mlwq_benchmark();
       }
+      else if(cmd == 'C' || cmd == 'c')
+      {
+        run_kem_comparison_benchmark();
+      }
       else
       {
-        printf("ONLY CMD 'M' IS ENABLED\r\n\r\n");
+        printf("ONLY CMD 'M'/'C' ARE ENABLED\r\n\r\n");
       }
     }
   }
