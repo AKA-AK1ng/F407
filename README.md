@@ -1,10 +1,10 @@
 # F407 M-LWQ Benchmark Project
 
-本项目是一个基于 STM32F407 的 M-LWQ（格密码）实现与性能测试工程，核心目标是：
+本项目是一个基于 STM32F407 的 M-LWQ 实现与性能测试工程，核心目标是：
 
 - 在 MCU 环境下运行 `ref` 版本的 PKE / KEM 流程；
 - 使用 DWT 周期计数器（`DWT->CYCCNT`）做细粒度性能分解；
-- 通过串口输出结构化 benchmark 报告，便于对比算法各子模块开销。
+- 串口输出结构化 benchmark 报告。
 
 ---
 
