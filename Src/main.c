@@ -31,6 +31,7 @@
 #include "params.h"
 #include "../ref/poly.h"
 #include "../ref/xof.h"
+#include "../ref/mlwq.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +46,6 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define DITHER_DOMAIN_SEPARATOR 0xFFu
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
 #define MLWQ_BENCH_ROUNDS 1000u
 #define MLWQ_BENCH_PROGRESS_STEP 100u
@@ -101,135 +101,270 @@ typedef struct {
   uint64_t key_gendither;
   uint64_t key_arith_as;
   uint64_t key_quantize;
+
+  uint64_t enc_genA;
+  uint64_t enc_sample_r;
+  uint64_t enc_gendither_u;
   uint64_t enc_arith_u;
   uint64_t enc_arith_v;
+  uint64_t enc_quantize_u;
+
   uint64_t dec_deq;
-  uint64_t dec_sTu;
-  uint64_t dec_sub;
+  uint64_t dec_arith;
   uint64_t dec_decode;
-  uint32_t mismatch_count;
+
+  uint64_t pke_keygen;
+  uint64_t pke_encrypt;
+  uint64_t pke_decrypt;
+
+  uint64_t kem_keygen;
+  uint64_t kem_encaps;
+  uint64_t kem_decaps;
+
+  uint32_t pke_mismatch_count;
+  uint32_t kem_mismatch_count;
 } mlwq_bench_totals_t;
 
-static void mlwq_bench_measure_round(mlwq_bench_totals_t *totals)
+static uint64_t bench_avg(uint64_t total)
 {
-  /* 全部 static，避免大对象压栈 */
-  static mlwq_pk pk_prof;
-  static mlwq_sk sk_prof;
-  static mlwq_ciphertext ct_prof;
+  return total / MLWQ_BENCH_ROUNDS;
+}
 
-  static poly_matrix A_prof, At_prof;
-  static poly_vec As_prof, d_pk_prof, r_prof, Atr_prof, b_deq_prof, u_deq_prof;
-  static poly v_before_msg_prof, m_poly_prof, v_final_prof, v_deq_prof, s_t_u_prof, diff_prof, zero_poly;
-  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES], seed_s[SEEDBYTES];
-  static uint8_t msg_in[32], msg_out[32], d_seed[33];
+static void print_data_sizes(void)
+{
+  printf(">>> PART 0: Protocol Data Sizes (Serialized/Wire Format)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("%-35s %-15s\r\n", "Component", "Size (Bytes)");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("[PKE] Public Key (pk):\r\n");
+  printf("  %-33s %d\r\n", "MLWQ_PUBLICKEYBYTES", MLWQ_PUBLICKEYBYTES);
+  printf("[PKE] Secret Key (sk):\r\n");
+  printf("  %-33s %d\r\n", "MLWQ_SECRETKEYBYTES", MLWQ_SECRETKEYBYTES);
+  printf("[PKE] Ciphertext (ct):\r\n");
+  printf("  %-33s %d\r\n\r\n", "MLWQ_CIPHERTEXTBYTES", MLWQ_CIPHERTEXTBYTES);
 
+  printf("[KEM] Public Key:\r\n");
+  printf("  %-33s %d\r\n", "Same as PKE PK", MLWQ_PUBLICKEYBYTES);
+  printf("[KEM] Secret Key (Bundled):\r\n");
+  printf("  %-33s %d (Approx. Theoretical)\r\n",
+         "sk + pk + H(pk) + z",
+         (int)(MLWQ_SECRETKEYBYTES + MLWQ_PUBLICKEYBYTES + 32 + 32));
+  printf("[KEM] Ciphertext:\r\n");
+  printf("  %-33s %d\r\n", "Same as PKE CT", MLWQ_CIPHERTEXTBYTES);
+  printf("[KEM] Shared Secret (ss):\r\n");
+  printf("  %-33s %d\r\n", "MLWQ_SSBYTES", MLWQ_SSBYTES);
+  printf("%s\r\n", PROFILE_SEPARATOR);
+}
+
+static void measure_pke_keygen_round(mlwq_bench_totals_t *totals)
+{
+  static poly_matrix A;
+  static poly_vec s, d_pk, As, b_q;
+  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_s[SEEDBYTES], d_seed[33];
   uint32_t t0;
+  uint64_t dt_mat, dt_samp, dt_dith, dt_arith, dt_quant;
 
-  for(int i = 0; i < MLWQ_N; i++) {
-    zero_poly.coeffs[i] = 0;
-  }
+  random_bytes(seed_A, sizeof(seed_A));
+  random_bytes(seed_d, sizeof(seed_d));
+  random_bytes(seed_s, sizeof(seed_s));
 
-  random_bytes(seed_A, SEEDBYTES);
-  random_bytes(seed_d, SEEDBYTES);
-  random_bytes(seed_ct, SEEDBYTES);
-  random_bytes(msg_in, sizeof(msg_in));
-  random_bytes(seed_s, SEEDBYTES);
-
-  // KeyGen breakdown
   t0 = DWT->CYCCNT;
-  ref_xof_expand_matrix(&A_prof, seed_A);
-  totals->key_genA += (uint64_t)(DWT->CYCCNT - t0);
+  ref_xof_expand_matrix(&A, seed_A);
+  dt_mat = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_genA += dt_mat;
 
   t0 = DWT->CYCCNT;
   for(int i = 0; i < MLWQ_K; i++) {
-    ref_poly_getnoise_eta1(&sk_prof.s.vec[i], seed_s, (uint8_t)i);
+    ref_poly_getnoise_eta1(&s.vec[i], seed_s, (uint8_t)i);
   }
-  totals->key_sample_s += (uint64_t)(DWT->CYCCNT - t0);
+  dt_samp = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_sample_s += dt_samp;
 
   for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_d[i];
-  d_seed[SEEDBYTES] = DITHER_DOMAIN_SEPARATOR;
+  d_seed[SEEDBYTES] = 0xFF;
   t0 = DWT->CYCCNT;
-  ref_xof_expand_poly_vec(&d_pk_prof, d_seed, MLWQ_Q / P_PK);
-  totals->key_gendither += (uint64_t)(DWT->CYCCNT - t0);
+  ref_xof_expand_poly_vec(&d_pk, d_seed, MLWQ_Q / P_PK);
+  dt_dith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_gendither += dt_dith;
 
   t0 = DWT->CYCCNT;
-  ref_poly_matrix_vec_mul(&As_prof, &A_prof, &sk_prof.s);
-  totals->key_arith_as += (uint64_t)(DWT->CYCCNT - t0);
+  ref_poly_matrix_vec_mul(&As, &A, &s);
+  dt_arith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_arith_as += dt_arith;
+
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; ++i) {
+    ref_poly_quantize(&b_q.vec[i], &As.vec[i], &d_pk.vec[i], P_PK);
+  }
+  dt_quant = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_quantize += dt_quant;
+
+  totals->pke_keygen += (dt_mat + dt_samp + dt_dith + dt_arith + dt_quant);
+}
+
+static void measure_pke_encrypt_round(mlwq_bench_totals_t *totals)
+{
+  static mlwq_pk pk;
+  static mlwq_sk sk;
+  static poly_matrix A, At;
+  static poly_vec r, d_u, Atr, u_q, b_deq;
+  static poly v_val;
+  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES], d_seed[33];
+  uint32_t t0;
+  uint64_t dt_mat, dt_samp, dt_dith, dt_au, dt_av, dt_quant;
+
+  random_bytes(seed_A, sizeof(seed_A));
+  random_bytes(seed_d, sizeof(seed_d));
+  random_bytes(seed_ct, sizeof(seed_ct));
+  ref_mlwq_keygen(&pk, &sk, seed_A, seed_d);
+
+  t0 = DWT->CYCCNT;
+  ref_xof_expand_matrix(&A, pk.seed_A);
+  dt_mat = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_genA += dt_mat;
 
   t0 = DWT->CYCCNT;
   for(int i = 0; i < MLWQ_K; i++) {
-    ref_poly_quantize(&pk_prof.b_q.vec[i], &As_prof.vec[i], &d_pk_prof.vec[i], P_PK);
+    ref_poly_getnoise_eta1(&r.vec[i], seed_ct, (uint8_t)i);
   }
-  totals->key_quantize += (uint64_t)(DWT->CYCCNT - t0);
+  dt_samp = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_sample_r += dt_samp;
 
-  for(int i = 0; i < SEEDBYTES; i++) {
-    pk_prof.seed_A[i] = seed_A[i];
-    pk_prof.seed_d[i] = seed_d[i];
-  }
+  for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_ct[i];
+  d_seed[SEEDBYTES] = 10;
+  t0 = DWT->CYCCNT;
+  ref_xof_expand_poly_vec(&d_u, d_seed, MLWQ_Q / P_U);
+  dt_dith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_gendither_u += dt_dith;
 
-  // Encrypt arithmetic breakdown
-  ref_xof_expand_matrix(&A_prof, pk_prof.seed_A);
-  for(int i = 0; i < MLWQ_K; i++) {
-    ref_poly_getnoise_eta1(&r_prof.vec[i], seed_ct, (uint8_t)i);
-    ref_poly_dequantize(&b_deq_prof.vec[i], &pk_prof.b_q.vec[i], P_PK);
-  }
   for(int i = 0; i < MLWQ_K; i++) {
     for(int j = 0; j < MLWQ_K; j++) {
-      At_prof.row[i].vec[j] = A_prof.row[j].vec[i];
+      At.row[i].vec[j] = A.row[j].vec[i];
     }
   }
-
   t0 = DWT->CYCCNT;
-  ref_poly_matrix_vec_mul(&Atr_prof, &At_prof, &r_prof);
-  totals->enc_arith_u += (uint64_t)(DWT->CYCCNT - t0);
+  ref_poly_matrix_vec_mul(&Atr, &At, &r);
+  dt_au = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_arith_u += dt_au;
 
-  t0 = DWT->CYCCNT;
-  ref_poly_vec_transpose_mul(&v_before_msg_prof, &b_deq_prof, &r_prof);
-  totals->enc_arith_v += (uint64_t)(DWT->CYCCNT - t0);
-
-  // 构造可解密样本（不计入 breakdown）
-  // 使用 zero dither，保证样本构造稳定且不把 dither 生成成本混入当前分项统计口径。
-  // Use zero dither to keep sample construction stable and avoid mixing dither-generation cost into timed components.
-  for(int i = 0; i < MLWQ_K; i++) {
-    ref_poly_quantize(&ct_prof.u.vec[i], &Atr_prof.vec[i], &zero_poly, P_U);
+  for(int i = 0; i < MLWQ_K; ++i) {
+    ref_poly_dequantize(&b_deq.vec[i], &pk.b_q.vec[i], P_PK);
   }
-  ref_poly_msg_encode(&m_poly_prof, msg_in);
-  ref_poly_add(&v_final_prof, &v_before_msg_prof, &m_poly_prof);
-  ref_poly_quantize(&ct_prof.v, &v_final_prof, &zero_poly, P_V);
+  t0 = DWT->CYCCNT;
+  ref_poly_vec_transpose_mul(&v_val, &b_deq, &r);
+  dt_av = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_arith_v += dt_av;
 
-  // Decrypt breakdown
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; ++i) {
+    ref_poly_quantize(&u_q.vec[i], &Atr.vec[i], &d_u.vec[i], P_U);
+  }
+  dt_quant = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_quantize_u += dt_quant;
+
+  totals->pke_encrypt += (dt_mat + dt_samp + dt_dith + dt_au + dt_av + dt_quant);
+}
+
+static void measure_pke_decrypt_round(mlwq_bench_totals_t *totals)
+{
+  static mlwq_pk pk;
+  static mlwq_sk sk;
+  static mlwq_ciphertext ct;
+  static poly_vec u_deq;
+  static poly v_deq, s_t_u, diff;
+  static uint8_t msg_in[32], msg_out[32];
+  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES];
+  uint32_t t0;
+  uint64_t dt_dq, dt_arith, dt_dec;
+
+  random_bytes(seed_A, sizeof(seed_A));
+  random_bytes(seed_d, sizeof(seed_d));
+  random_bytes(seed_ct, sizeof(seed_ct));
+  random_bytes(msg_in, sizeof(msg_in));
+  ref_mlwq_keygen(&pk, &sk, seed_A, seed_d);
+  ref_mlwq_encrypt(&ct, &pk, msg_in, seed_ct);
+
   t0 = DWT->CYCCNT;
   for(int i = 0; i < MLWQ_K; i++) {
-    ref_poly_dequantize(&u_deq_prof.vec[i], &ct_prof.u.vec[i], P_U);
+    ref_poly_dequantize(&u_deq.vec[i], &ct.u.vec[i], P_U);
   }
-  ref_poly_dequantize(&v_deq_prof, &ct_prof.v, P_V);
-  totals->dec_deq += (uint64_t)(DWT->CYCCNT - t0);
+  ref_poly_dequantize(&v_deq, &ct.v, P_V);
+  dt_dq = (uint64_t)(DWT->CYCCNT - t0);
+  totals->dec_deq += dt_dq;
 
   t0 = DWT->CYCCNT;
-  ref_poly_vec_transpose_mul(&s_t_u_prof, &sk_prof.s, &u_deq_prof);
-  totals->dec_sTu += (uint64_t)(DWT->CYCCNT - t0);
+  ref_poly_vec_transpose_mul(&s_t_u, &sk.s, &u_deq);
+  ref_poly_sub(&diff, &v_deq, &s_t_u);
+  dt_arith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->dec_arith += dt_arith;
 
   t0 = DWT->CYCCNT;
-  ref_poly_sub(&diff_prof, &v_deq_prof, &s_t_u_prof);
-  totals->dec_sub += (uint64_t)(DWT->CYCCNT - t0);
+  ref_poly_msg_decode(msg_out, &diff);
+  dt_dec = (uint64_t)(DWT->CYCCNT - t0);
+  totals->dec_decode += dt_dec;
 
-  t0 = DWT->CYCCNT;
-  ref_poly_msg_decode(msg_out, &diff_prof);
-  totals->dec_decode += (uint64_t)(DWT->CYCCNT - t0);
-
+  totals->pke_decrypt += (dt_dq + dt_arith + dt_dec);
   if(memcmp(msg_in, msg_out, sizeof(msg_in)) != 0) {
-    totals->mismatch_count++;
+    totals->pke_mismatch_count++;
+  }
+}
+
+static void measure_kem_round(mlwq_bench_totals_t *totals)
+{
+  static mlwq_pk pk;
+  static mlwq_kem_sk sk;
+  static mlwq_ciphertext ct;
+  static uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
+  uint32_t t0;
+  int dec_ok;
+
+  t0 = DWT->CYCCNT;
+  ref_mlwq_kem_keygen(&pk, &sk);
+  totals->kem_keygen += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  ref_mlwq_kem_encaps(&ct, ss1, &pk);
+  totals->kem_encaps += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  dec_ok = ref_mlwq_kem_decaps(ss2, &sk, &ct);
+  totals->kem_decaps += (uint64_t)(DWT->CYCCNT - t0);
+
+  if((dec_ok == 0) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
+    totals->kem_mismatch_count++;
   }
 }
 
 static void run_mlwq_benchmark(void)
 {
   mlwq_bench_totals_t totals = {0};
-  uint64_t sum_dec_arith_vsu;
+  uint64_t q_avg, s_avg;
+  uint32_t correctness_ok;
 
-  printf("MLWQ BENCH START (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
-  printf("TEST POINTS: [K1]GenMatrix [K2]Sample [K3]GenDither [K4]Arith(A*s) [K5]Quantize ");
-  printf("[E1]Arith(u) [E2]Arith(v) [D1]DeQuant [D2]Arith(v-su) [D3]Decode\r\n");
+  printf("\r\n=== M-LWQ Comprehensive Performance Report (STM32 Scalar) ===\r\n");
+  printf("%sN=%d, K=%d\r\n\r\n", PARAM_NAME, MLWQ_N, MLWQ_K);
+  print_data_sizes();
+
+  printf(">>> Running scalar correctness check...\r\n");
+  {
+    mlwq_pk pk;
+    mlwq_kem_sk sk;
+    mlwq_ciphertext ct;
+    uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
+    ref_mlwq_kem_keygen(&pk, &sk);
+    ref_mlwq_kem_encaps(&ct, ss1, &pk);
+    correctness_ok = (uint32_t)(ref_mlwq_kem_decaps(ss2, &sk, &ct) && (memcmp(ss1, ss2, MLWQ_SSBYTES) == 0));
+  }
+  printf("   [%s] Correctness verified.\r\n", correctness_ok ? "PASS" : "FAIL");
+  if(!correctness_ok) {
+    printf("Abort benchmark due to failed correctness check.\r\n\r\n");
+    return;
+  }
+
+  printf(">>> Running benchmark (%lu rounds)...\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("TEST POINTS: KG=[GenMatrix/Sample/GenDither/Arith/Quantize] ");
+  printf("ENC=[GenMatrix/Sample/GenDither/Arith(u)/Arith(v)/Quantize(u)] DEC=[DeQuant/Arith/Decode] ");
+  printf("KEM=[KeyGen/Encaps/Decaps]\r\n");
 
   /* 启用 DWT 周期计数器 */
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -238,7 +373,11 @@ static void run_mlwq_benchmark(void)
 
   for(uint32_t round = 0; round < MLWQ_BENCH_ROUNDS; round++)
   {
-    mlwq_bench_measure_round(&totals);
+    measure_pke_keygen_round(&totals);
+    measure_pke_encrypt_round(&totals);
+    measure_pke_decrypt_round(&totals);
+    measure_kem_round(&totals);
+
     if(((round + 1u) % MLWQ_BENCH_PROGRESS_STEP) == 0u) {
       printf("BENCH PROGRESS: %lu/%lu\r\n",
              (unsigned long)(round + 1u),
@@ -246,33 +385,62 @@ static void run_mlwq_benchmark(void)
     }
   }
 
-  sum_dec_arith_vsu = totals.dec_sTu + totals.dec_sub;
-
+  printf("\r\n>>> PART 1: Internal Breakdown (Scalar)\r\n");
   printf("%s", PROFILE_SEPARATOR);
   printf(" PKE KeyGen Breakdown (Avg, %lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
   printf("%s", PROFILE_SEPARATOR);
-  printf("GenMatrix (A): %lu\r\n", (unsigned long)(totals.key_genA / MLWQ_BENCH_ROUNDS));
-  printf("Sample (s): %lu\r\n", (unsigned long)(totals.key_sample_s / MLWQ_BENCH_ROUNDS));
-  printf("GenDither: %lu\r\n", (unsigned long)(totals.key_gendither / MLWQ_BENCH_ROUNDS));
-  printf("Arith (A*s): %lu\r\n", (unsigned long)(totals.key_arith_as / MLWQ_BENCH_ROUNDS));
-  printf("Quantize: %lu\r\n", (unsigned long)(totals.key_quantize / MLWQ_BENCH_ROUNDS));
+  printf("GenMatrix (A): %lu\r\n", (unsigned long)bench_avg(totals.key_genA));
+  printf("Sample (s): %lu\r\n", (unsigned long)bench_avg(totals.key_sample_s));
+  printf("GenDither: %lu\r\n", (unsigned long)bench_avg(totals.key_gendither));
+  printf("Arith (A*s): %lu\r\n", (unsigned long)bench_avg(totals.key_arith_as));
+  printf("Quantize: %lu\r\n", (unsigned long)bench_avg(totals.key_quantize));
 
-  printf("%s", PROFILE_SEPARATOR);
+  printf("\r\n%s", PROFILE_SEPARATOR);
   printf(" PKE Encrypt Breakdown (Avg, %lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
   printf("%s", PROFILE_SEPARATOR);
-  printf("Arith (u): %lu\r\n", (unsigned long)(totals.enc_arith_u / MLWQ_BENCH_ROUNDS));
-  printf("Arith (v): %lu\r\n", (unsigned long)(totals.enc_arith_v / MLWQ_BENCH_ROUNDS));
+  printf("GenMatrix (A): %lu\r\n", (unsigned long)bench_avg(totals.enc_genA));
+  printf("Sample (r): %lu\r\n", (unsigned long)bench_avg(totals.enc_sample_r));
+  printf("GenDither (u): %lu\r\n", (unsigned long)bench_avg(totals.enc_gendither_u));
+  printf("Arith (u): %lu\r\n", (unsigned long)bench_avg(totals.enc_arith_u));
+  printf("Arith (v): %lu\r\n", (unsigned long)bench_avg(totals.enc_arith_v));
+  printf("Quantize (u): %lu\r\n", (unsigned long)bench_avg(totals.enc_quantize_u));
 
-  printf("%s", PROFILE_SEPARATOR);
+  printf("\r\n%s", PROFILE_SEPARATOR);
   printf(" PKE Decrypt Breakdown (Avg, %lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
   printf("%s", PROFILE_SEPARATOR);
-  printf("DeQuantize: %lu\r\n", (unsigned long)(totals.dec_deq / MLWQ_BENCH_ROUNDS));
-  printf("Arith (v-su): %lu (sTu=%lu sub=%lu)\r\n",
-         (unsigned long)(sum_dec_arith_vsu / MLWQ_BENCH_ROUNDS),
-         (unsigned long)(totals.dec_sTu / MLWQ_BENCH_ROUNDS),
-         (unsigned long)(totals.dec_sub / MLWQ_BENCH_ROUNDS));
-  printf("Decode: %lu\r\n", (unsigned long)(totals.dec_decode / MLWQ_BENCH_ROUNDS));
-  printf("Decode mismatch count: %lu\r\n\r\n", (unsigned long)totals.mismatch_count);
+  printf("DeQuantize: %lu\r\n", (unsigned long)bench_avg(totals.dec_deq));
+  printf("Arith (v-su): %lu\r\n", (unsigned long)bench_avg(totals.dec_arith));
+  printf("Decode: %lu\r\n", (unsigned long)bench_avg(totals.dec_decode));
+
+  printf("\r\n>>> PART 2: Core Component Comparison (Quantize vs Sample)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  q_avg = bench_avg(totals.key_quantize);
+  s_avg = bench_avg(totals.key_sample_s);
+  printf("KeyGen Quantize avg: %lu\r\n", (unsigned long)q_avg);
+  printf("KeyGen Sample avg: %lu\r\n", (unsigned long)s_avg);
+  if(q_avg != 0u) {
+    printf("Sample/Quantize ratio: %lu.%02lu x\r\n",
+           (unsigned long)(s_avg / q_avg),
+           (unsigned long)((s_avg % q_avg) * 100u / q_avg));
+  } else {
+    printf("Sample/Quantize ratio: N/A\r\n");
+  }
+
+  printf("\r\n>>> PART 3: PKE Full Flow Summary (Total Time)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("PKE KeyGen: %lu\r\n", (unsigned long)bench_avg(totals.pke_keygen));
+  printf("PKE Encrypt: %lu\r\n", (unsigned long)bench_avg(totals.pke_encrypt));
+  printf("PKE Decrypt: %lu\r\n", (unsigned long)bench_avg(totals.pke_decrypt));
+
+  printf("\r\n>>> PART 4: KEM Full Flow Summary (IND-CCA2)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("KEM KeyGen: %lu\r\n", (unsigned long)bench_avg(totals.kem_keygen));
+  printf("KEM Encaps: %lu\r\n", (unsigned long)bench_avg(totals.kem_encaps));
+  printf("KEM Decaps: %lu\r\n", (unsigned long)bench_avg(totals.kem_decaps));
+
+  printf("\r\nPKE decode mismatch count: %lu\r\n", (unsigned long)totals.pke_mismatch_count);
+  printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)totals.kem_mismatch_count);
+  printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
 /* USER CODE END 0 */
 
@@ -299,9 +467,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // 开机提示
   printf("=========================\r\n");
-  printf("  MLWQ BENCH SYSTEM READY\r\n");
+  printf("  MLWQ TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
-  printf("CMD: M=RUN MLWQ BENCHMARK (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("CMD: M=RUN COMPREHENSIVE SCALAR BENCHMARK (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
