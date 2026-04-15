@@ -231,6 +231,9 @@ static void run_kyber_benchmark(uint32_t rounds,
 
 static void print_kem_summary_row(const kem_summary_t *summary, uint32_t rounds)
 {
+  if(rounds == 0u) {
+    return;
+  }
   printf("%-*s | %*lu | %*lu | %*lu | %*lu\r\n",
          KEM_SCHEME_COL_WIDTH,
          summary->name,
@@ -467,8 +470,8 @@ static void run_mlwq_benchmark(void)
     uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
     ref_mlwq_kem_keygen(&pk, &sk);
     ref_mlwq_kem_encaps(&ct, ss1, &pk);
-    correctness_ok = ((ref_mlwq_kem_decaps(ss2, &sk, &ct) == MLWQ_KEM_DECAPS_SUCCESS) &&
-                      (memcmp(ss1, ss2, MLWQ_SSBYTES) == 0));
+    correctness_ok = (uint32_t)((ref_mlwq_kem_decaps(ss2, &sk, &ct) == MLWQ_KEM_DECAPS_SUCCESS) &&
+                                (memcmp(ss1, ss2, MLWQ_SSBYTES) == 0));
   }
   printf("   [%s] Correctness verified.\r\n", correctness_ok ? "PASS" : "FAIL");
   if(!correctness_ok) {
