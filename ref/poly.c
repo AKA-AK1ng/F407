@@ -1,7 +1,7 @@
 #include "poly.h"
 #include "ntt.h"
 #include "reduce.h"
-#include "fips202.h"
+#include "../common/fips202.h"
 #include "..\common\params.h"
 
 
@@ -323,4 +323,3 @@ int ref_check_poly_eq(const poly *a, const poly *b) {
         if (a->coeffs[i] != b->coeffs[i]) return 0;
     return 1;
 }
-

@@ -101,7 +101,7 @@ KEM shared-secret mismatch count: 0
 
 ---
 
-## Kyber/Saber 粗粒度 cycles 对比（与 MLWQ 同口径）
+## Kyber512 粗粒度 cycles 基准
 
 `Src/main.c` 已新增串口命令 `C`，用于输出统一表格：
 
@@ -109,14 +109,5 @@ KEM shared-secret mismatch count: 0
 
 ### 说明
 
-- `C` 命令始终会测 MLWQ KEM 三步；
-- 外部算法（Kyber/Saber）采用**编译期开关二选一**，避免同工程下 `randombytes`/`sha3_*` 等符号冲突；
+- `C` 命令当前仅测 Kyber512；
 - 测量统一使用 `DWT->CYCCNT`，轮次与 MLWQ 主基准一致（`MLWQ_BENCH_ROUNDS`）。
-
-### 编译开关
-
-- 启用 Kyber512 对比：定义 `BENCH_KYBER512`
-- 启用 Saber(L=3) 对比：定义 `BENCH_SABER_L3`
-- 两者不要同时定义（代码中已做编译期检查）
-
-若未定义上述开关，`C` 命令仅输出 MLWQ 一行并提示外部算法未启用。
