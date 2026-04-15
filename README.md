@@ -19,7 +19,7 @@
 
 ---
 
-## 当前测试逻辑（与 sample_main 对齐）
+## 当前测试逻辑
 
 串口输入命令 `M` 后，主程序会执行：
 
@@ -37,7 +37,7 @@
 
 ---
 
-## Benchmark 结果（你提供的数据）
+## Benchmark 结果
 
 ```text
 >> PART 1: Internal Breakdown (Scalar)
