@@ -119,7 +119,7 @@ static void mlwq_bench_measure_round(mlwq_bench_totals_t *totals)
 
   static poly_matrix A_prof, At_prof;
   static poly_vec As_prof, d_pk_prof, r_prof, Atr_prof, b_deq_prof, u_deq_prof;
-  static poly v_val_prof, m_poly_prof, v_final_prof, v_deq_prof, s_t_u_prof, diff_prof, zero_poly;
+  static poly v_base_prof, m_poly_prof, v_final_prof, v_deq_prof, s_t_u_prof, diff_prof, zero_poly;
   static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES], seed_s[SEEDBYTES];
   static uint8_t msg_in[32], msg_out[32], d_seed[33];
 
@@ -184,15 +184,16 @@ static void mlwq_bench_measure_round(mlwq_bench_totals_t *totals)
   totals->enc_arith_u += (uint64_t)(DWT->CYCCNT - t0);
 
   t0 = DWT->CYCCNT;
-  ref_poly_vec_transpose_mul(&v_val_prof, &b_deq_prof, &r_prof);
+  ref_poly_vec_transpose_mul(&v_base_prof, &b_deq_prof, &r_prof);
   totals->enc_arith_v += (uint64_t)(DWT->CYCCNT - t0);
 
   // 构造可解密样本（不计入 breakdown）
+  // 使用 zero dither，保证样本构造稳定且不把 dither 生成成本混入当前分项统计口径。
   for(int i = 0; i < MLWQ_K; i++) {
     ref_poly_quantize(&ct_prof.u.vec[i], &Atr_prof.vec[i], &zero_poly, P_U);
   }
   ref_poly_msg_encode(&m_poly_prof, msg_in);
-  ref_poly_add(&v_final_prof, &v_val_prof, &m_poly_prof);
+  ref_poly_add(&v_final_prof, &v_base_prof, &m_poly_prof);
   ref_poly_quantize(&ct_prof.v, &v_final_prof, &zero_poly, P_V);
 
   // Decrypt breakdown
