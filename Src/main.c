@@ -62,6 +62,10 @@ int crypto_kem_dec(unsigned char *ss, const unsigned char *ct, const unsigned ch
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
 #define MLWQ_BENCH_ROUNDS 1000u
 #define MLWQ_BENCH_PROGRESS_STEP 100u
+#define MLWQ_KEM_DECAPS_SUCCESS 1
+#define KEM_SCHEME_COL_WIDTH 12
+#define KEM_CYCLES_COL_WIDTH 12
+#define KEM_MISMATCH_COL_WIDTH 8
 
 #if defined(BENCH_KYBER512) && defined(BENCH_SABER_L3)
 #error "Only one external benchmark can be enabled at a time."
@@ -202,7 +206,7 @@ static void run_mlwq_kem_benchmark(uint32_t rounds,
     dec_ok = ref_mlwq_kem_decaps(ss2, &sk, &ct);
     *decaps_total += (uint64_t)(DWT->CYCCNT - t0);
 
-    if((dec_ok == 0) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
+    if((dec_ok != MLWQ_KEM_DECAPS_SUCCESS) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
       (*mismatch_count)++;
     }
   }
@@ -290,11 +294,16 @@ static void run_saber_benchmark(uint32_t rounds,
 
 static void print_kem_summary_row(const kem_summary_t *summary, uint32_t rounds)
 {
-  printf("%-12s | %12lu | %12lu | %12lu | %8lu\r\n",
+  printf("%-*s | %*lu | %*lu | %*lu | %*lu\r\n",
+         KEM_SCHEME_COL_WIDTH,
          summary->name,
+         KEM_CYCLES_COL_WIDTH,
          (unsigned long)(summary->keygen_cycles / rounds),
+         KEM_CYCLES_COL_WIDTH,
          (unsigned long)(summary->encaps_cycles / rounds),
+         KEM_CYCLES_COL_WIDTH,
          (unsigned long)(summary->decaps_cycles / rounds),
+         KEM_MISMATCH_COL_WIDTH,
          (unsigned long)summary->mismatch_count);
 }
 
@@ -498,7 +507,7 @@ static void measure_kem_round(mlwq_bench_totals_t *totals)
   dec_ok = ref_mlwq_kem_decaps(ss2, &sk, &ct);
   totals->kem_decaps += (uint64_t)(DWT->CYCCNT - t0);
 
-  if((dec_ok == 0) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
+  if((dec_ok != MLWQ_KEM_DECAPS_SUCCESS) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
     totals->kem_mismatch_count++;
   }
 }
@@ -521,7 +530,8 @@ static void run_mlwq_benchmark(void)
     uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
     ref_mlwq_kem_keygen(&pk, &sk);
     ref_mlwq_kem_encaps(&ct, ss1, &pk);
-    correctness_ok = (uint32_t)(ref_mlwq_kem_decaps(ss2, &sk, &ct) && (memcmp(ss1, ss2, MLWQ_SSBYTES) == 0));
+    correctness_ok = ((ref_mlwq_kem_decaps(ss2, &sk, &ct) == MLWQ_KEM_DECAPS_SUCCESS) &&
+                      (memcmp(ss1, ss2, MLWQ_SSBYTES) == 0));
   }
   printf("   [%s] Correctness verified.\r\n", correctness_ok ? "PASS" : "FAIL");
   if(!correctness_ok) {
@@ -641,14 +651,23 @@ static void run_kem_comparison_benchmark(void)
 #endif
 
   printf("%s", PROFILE_SEPARATOR);
-  printf("%-12s | %-12s | %-12s | %-12s | %-8s\r\n",
-         "Scheme", "KeyGen", "Encaps", "Decaps", "Mismatch");
+  printf("%-*s | %-*s | %-*s | %-*s | %-*s\r\n",
+         KEM_SCHEME_COL_WIDTH,
+         "Scheme",
+         KEM_CYCLES_COL_WIDTH,
+         "KeyGen",
+         KEM_CYCLES_COL_WIDTH,
+         "Encaps",
+         KEM_CYCLES_COL_WIDTH,
+         "Decaps",
+         KEM_MISMATCH_COL_WIDTH,
+         "Mismatch");
   printf("%s", PROFILE_SEPARATOR);
   print_kem_summary_row(&mlwq_summary, MLWQ_BENCH_ROUNDS);
 #if defined(BENCH_KYBER512) || defined(BENCH_SABER_L3)
   print_kem_summary_row(&ext_summary, MLWQ_BENCH_ROUNDS);
 #else
-  printf("%s\r\n", "External bench disabled. Define BENCH_KYBER512 or BENCH_SABER_L3 at build time.");
+  printf("External benchmark disabled. Define BENCH_KYBER512 or BENCH_SABER_L3 at build time.\r\n");
 #endif
   printf("%s\r\n", PROFILE_SEPARATOR);
 }
