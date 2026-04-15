@@ -10,11 +10,11 @@
 
 ## 目录结构说明
 
-- `/home/runner/work/F407/F407/Src/main.c`  
+- `Src/main.c`  
   MCU 主程序入口、串口命令处理、benchmark 逻辑与结果打印。
-- `/home/runner/work/F407/F407/common`  
+- `common/`  
   公共参数与结构定义（如 `params.h`、`structs.h`、随机与哈希接口）。
-- `/home/runner/work/F407/F407/ref`  
+- `ref/`  
   参考实现（PKE/KEM、多项式运算、XOF 等）。
 
 ---
