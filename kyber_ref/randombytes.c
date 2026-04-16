@@ -15,6 +15,8 @@
 #include <sys/syscall.h>
 #elif __NetBSD__
 #include <sys/random.h>
+#elif defined(STM32F407xx)
+#include "stm32f4xx_hal.h"
 #else
 #include <unistd.h>
 #endif
@@ -68,6 +70,28 @@ void randombytes(uint8_t *out, size_t outlen) {
 
     out += ret;
     outlen -= ret;
+  }
+}
+#elif defined(STM32F407xx)
+extern RNG_HandleTypeDef hrng;
+
+void randombytes(uint8_t *out, size_t outlen) {
+  size_t generated = 0;
+
+  while(generated < outlen) {
+    uint32_t value;
+    size_t chunk = outlen - generated;
+
+    if(HAL_RNG_GenerateRandomNumber(&hrng, &value) != HAL_OK)
+      abort();
+
+    if(chunk > sizeof(value))
+      chunk = sizeof(value);
+
+    for(size_t i = 0; i < chunk; i++)
+      out[generated + i] = (uint8_t)(value >> (8U * i));
+
+    generated += chunk;
   }
 }
 #else
