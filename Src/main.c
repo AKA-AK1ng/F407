@@ -41,6 +41,7 @@ typedef struct {
   uint32_t keygen_success_count;
   uint32_t encaps_success_count;
   uint32_t decaps_success_count;
+  uint32_t error_count;
   uint32_t mismatch_count;
 } kem_summary_t;
 
@@ -54,6 +55,7 @@ typedef struct {
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
+/* Default benchmark rounds for stable UART-reported averages on this target. */
 #define BENCH_ROUNDS 1000u
 #define KYBER_DEC_SUCCESS 0
 #define KEM_SCHEME_COL_WIDTH 12
@@ -81,10 +83,11 @@ static void run_kyber_benchmark(uint32_t rounds,
                                 uint32_t *keygen_success_count,
                                 uint32_t *encaps_success_count,
                                 uint32_t *decaps_success_count,
+                                uint32_t *error_count,
                                 uint32_t *mismatch_count);
 static void print_report_separator(void);
 static void print_kyber_data_sizes(void);
-static uint32_t safe_average(uint64_t total_cycles, uint32_t count);
+static uint64_t safe_average(uint64_t total_cycles, uint32_t count);
 static void print_kem_summary_row(const kem_summary_t *summary);
 /* USER CODE END PFP */
 
@@ -127,6 +130,7 @@ static void run_kyber_benchmark(uint32_t rounds,
                                 uint32_t *keygen_success_count,
                                 uint32_t *encaps_success_count,
                                 uint32_t *decaps_success_count,
+                                uint32_t *error_count,
                                 uint32_t *mismatch_count)
 {
   static uint8_t pk[pqcrystals_kyber512_ref_PUBLICKEYBYTES];
@@ -145,6 +149,7 @@ static void run_kyber_benchmark(uint32_t rounds,
   *keygen_success_count = 0;
   *encaps_success_count = 0;
   *decaps_success_count = 0;
+  *error_count = 0;
   *mismatch_count = 0;
 
   for(uint32_t round = 0; round < rounds; round++)
@@ -153,7 +158,7 @@ static void run_kyber_benchmark(uint32_t rounds,
     keygen_ret = pqcrystals_kyber512_ref_keypair(pk, sk);
     elapsed_cycles = DWT->CYCCNT - t0;
     if(keygen_ret != 0) {
-      (*mismatch_count)++;
+      (*error_count)++;
       continue;
     }
     *keygen_total += (uint64_t)elapsed_cycles;
@@ -163,7 +168,7 @@ static void run_kyber_benchmark(uint32_t rounds,
     enc_ret = pqcrystals_kyber512_ref_enc(ct, ss1, pk);
     elapsed_cycles = DWT->CYCCNT - t0;
     if(enc_ret != 0) {
-      (*mismatch_count)++;
+      (*error_count)++;
       continue;
     }
     *encaps_total += (uint64_t)elapsed_cycles;
@@ -208,25 +213,25 @@ static void print_kyber_data_sizes(void)
   printf("\r\n");
 }
 
-static uint32_t safe_average(uint64_t total_cycles, uint32_t count)
+static uint64_t safe_average(uint64_t total_cycles, uint32_t count)
 {
   if(count == 0u) {
-    return 0u;
+    return 0ULL;
   }
-  return (uint32_t)(total_cycles / count);
+  return total_cycles / count;
 }
 
 static void print_kem_summary_row(const kem_summary_t *summary)
 {
-  printf("%-*s | %*lu | %*lu | %*lu | %*lu\r\n",
+  printf("%-*s | %*llu | %*llu | %*llu | %*lu\r\n",
          KEM_SCHEME_COL_WIDTH,
          summary->name,
          KEM_CYCLES_COL_WIDTH,
-         (unsigned long)safe_average(summary->keygen_cycles, summary->keygen_success_count),
+         (unsigned long long)safe_average(summary->keygen_cycles, summary->keygen_success_count),
          KEM_CYCLES_COL_WIDTH,
-         (unsigned long)safe_average(summary->encaps_cycles, summary->encaps_success_count),
+         (unsigned long long)safe_average(summary->encaps_cycles, summary->encaps_success_count),
          KEM_CYCLES_COL_WIDTH,
-         (unsigned long)safe_average(summary->decaps_cycles, summary->decaps_success_count),
+         (unsigned long long)safe_average(summary->decaps_cycles, summary->decaps_success_count),
          KEM_MISMATCH_COL_WIDTH,
          (unsigned long)summary->mismatch_count);
 }
@@ -241,6 +246,7 @@ static void run_kem_comparison_benchmark(void)
     .keygen_success_count = 0,
     .encaps_success_count = 0,
     .decaps_success_count = 0,
+    .error_count = 0,
     .mismatch_count = 0
   };
 
@@ -257,6 +263,7 @@ static void run_kem_comparison_benchmark(void)
                       &kyber_summary.keygen_success_count,
                       &kyber_summary.encaps_success_count,
                       &kyber_summary.decaps_success_count,
+                      &kyber_summary.error_count,
                       &kyber_summary.mismatch_count);
 
   printf(">>> PART 1: KEM Full Flow Summary (IND-CCA2)\r\n");
@@ -275,6 +282,7 @@ static void run_kem_comparison_benchmark(void)
   print_report_separator();
   print_kem_summary_row(&kyber_summary);
   print_report_separator();
+  printf("KEM operation error count: %lu\r\n", (unsigned long)kyber_summary.error_count);
   printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)kyber_summary.mismatch_count);
   printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
