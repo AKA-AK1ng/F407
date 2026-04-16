@@ -2,7 +2,7 @@
 #define PARAMS_H
 
 #ifndef KYBER_K
-#define KYBER_K 3	/* Change this for different security strengths */
+#define KYBER_K 2	/* Default to Kyber512 for embedded benchmark build */
 #endif
 
 

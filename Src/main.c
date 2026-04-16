@@ -27,11 +27,18 @@
 /* USER CODE BEGIN Includes */
 #include "stdio.h"  // 用于printf
 #include "string.h"
+
+#ifndef KYBER_ONLY
+#define KYBER_ONLY 1
+#endif
+
+#if !KYBER_ONLY
 #include "random.h"
 #include "params.h"
 #include "../ref/poly.h"
 #include "../ref/xof.h"
 #include "../ref/mlwq.h"
+#endif
 #include "../kyber_ref/api.h"
 /* USER CODE END Includes */
 
@@ -103,6 +110,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+#if !KYBER_ONLY
 typedef struct {
   uint64_t key_genA;
   uint64_t key_sample_s;
@@ -557,6 +565,7 @@ static void run_mlwq_benchmark(void)
   printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)totals.kem_mismatch_count);
   printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
+#endif
 
 static void run_kem_comparison_benchmark(void)
 {
@@ -612,9 +621,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // 开机提示
   printf("=========================\r\n");
-  printf("  MLWQ TEST SYSTEM READY\r\n");
+  printf("  KYBER TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
-  printf("CMD: M=RUN COMPREHENSIVE SCALAR BENCHMARK (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
   printf("CMD: C=RUN KYBER512 CYCLE TABLE (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
   printf("BUILD MODE: KYBER-ONLY BENCHMARK\r\n");
   printf("=========================\r\n");
@@ -627,17 +635,13 @@ int main(void)
     {
       cmd_flag = 0;
 
-      if(cmd == 'M' || cmd == 'm')
-      {
-        run_mlwq_benchmark();
-      }
-      else if(cmd == 'C' || cmd == 'c')
+      if(cmd == 'C' || cmd == 'c')
       {
         run_kem_comparison_benchmark();
       }
       else
       {
-        printf("ONLY CMD 'M'/'C' ARE ENABLED\r\n\r\n");
+        printf("ONLY CMD 'C' IS ENABLED\r\n\r\n");
       }
     }
   }

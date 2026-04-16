@@ -21,19 +21,11 @@
 
 ## 当前测试逻辑
 
-串口输入命令 `M` 后，主程序会执行：
+当前固件为 **Kyber-only benchmark**，串口输入命令 `C` 后执行 Kyber512 基准：
 
-1. 协议尺寸打印（PKE/KEM 关键对象字节数）；
-2. 正确性预检查（KEM 一次封装/解封装一致性）；
-3. 1000 轮 benchmark，统计以下部分平均周期：
-   - PKE KeyGen 分解
-   - PKE Encrypt 分解
-   - PKE Decrypt 分解
-   - PKE 全流程
-   - KEM 全流程
-4. mismatch 统计输出：
-   - PKE decode mismatch count
-   - KEM shared-secret mismatch count
+1. 运行 1000 轮 Kyber512 `KeyGen/Encaps/Decaps`；
+2. 统计平均 cycles；
+3. 输出 mismatch 计数（共享密钥不一致次数）。
 
 ---
 
@@ -110,4 +102,4 @@ KEM shared-secret mismatch count: 0
 ### 说明
 
 - `C` 命令当前仅测 Kyber512；
-- 测量统一使用 `DWT->CYCCNT`，轮次与 MLWQ 主基准一致（`MLWQ_BENCH_ROUNDS`）。
+- 测量统一使用 `DWT->CYCCNT`，轮次为 `MLWQ_BENCH_ROUNDS`（1000）。
