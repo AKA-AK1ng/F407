@@ -269,17 +269,26 @@ static uint64_t safe_average(uint64_t total_cycles, uint32_t count)
   return total_cycles / count;
 }
 
+static unsigned long cycle_u64_to_printable_ul(uint64_t cycles)
+{
+  /* newlib-nano on target may not support %llu in printf; cap to 32-bit for stable UART reporting. */
+  if(cycles > 0xFFFFFFFFULL) {
+    return 0xFFFFFFFFUL;
+  }
+  return (unsigned long)cycles;
+}
+
 static void print_kem_summary_row(const kem_summary_t *summary)
 {
-  printf("%-*s | %*llu | %*llu | %*llu | %*lu\r\n",
+  printf("%-*s | %*lu | %*lu | %*lu | %*lu\r\n",
          KEM_SCHEME_COL_WIDTH,
          summary->name,
          KEM_CYCLES_COL_WIDTH,
-         (unsigned long long)safe_average(summary->keygen_cycles, summary->keygen_success_count),
+         cycle_u64_to_printable_ul(safe_average(summary->keygen_cycles, summary->keygen_success_count)),
          KEM_CYCLES_COL_WIDTH,
-         (unsigned long long)safe_average(summary->encaps_cycles, summary->encaps_success_count),
+         cycle_u64_to_printable_ul(safe_average(summary->encaps_cycles, summary->encaps_success_count)),
          KEM_CYCLES_COL_WIDTH,
-         (unsigned long long)safe_average(summary->decaps_cycles, summary->decaps_success_count),
+         cycle_u64_to_printable_ul(safe_average(summary->decaps_cycles, summary->decaps_success_count)),
          KEM_MISMATCH_COL_WIDTH,
          (unsigned long)summary->mismatch_count);
 }
@@ -324,11 +333,11 @@ static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint
 {
   uint64_t avg = average_cycle_stat(stat);
   uint64_t pct_x100 = (total_avg == 0ULL) ? 0ULL : ((avg * 10000ULL) / total_avg);
-  printf("%-24s | %-14llu | %3llu.%02llu\r\n",
+  printf("%-24s | %-14lu | %3lu.%02lu\r\n",
          name,
-         (unsigned long long)avg,
-         (unsigned long long)(pct_x100 / 100ULL),
-         (unsigned long long)(pct_x100 % 100ULL));
+         cycle_u64_to_printable_ul(avg),
+         cycle_u64_to_printable_ul(pct_x100 / 100ULL),
+         cycle_u64_to_printable_ul(pct_x100 % 100ULL));
 }
 
 static void print_round_progress(const char *stage, uint32_t completed_rounds, uint32_t total_rounds, uint32_t *next_progress_round)
@@ -465,13 +474,13 @@ static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
 
   printf(">>> PART 1: Kyber512 KeyGen Breakdown (Cycles)\r\n");
   print_report_separator();
-  printf("Baseline keypair (api): avg=%llu, min=%lu, max=%lu\r\n",
-         (unsigned long long)keypair_avg,
+  printf("Baseline keypair (api): avg=%lu, min=%lu, max=%lu\r\n",
+         cycle_u64_to_printable_ul(keypair_avg),
          (unsigned long)breakdown->keypair_total.min,
          (unsigned long)breakdown->keypair_total.max);
-  printf("RNG(randombytes 64B): avg=%llu\r\n", (unsigned long long)rng_avg);
-  printf("keypair_derand (reconstructed): avg=%llu, min=%lu, max=%lu\r\n",
-         (unsigned long long)derand_avg,
+  printf("RNG(randombytes 64B): avg=%lu\r\n", cycle_u64_to_printable_ul(rng_avg));
+  printf("keypair_derand (reconstructed): avg=%lu, min=%lu, max=%lu\r\n",
+         cycle_u64_to_printable_ul(derand_avg),
          (unsigned long)breakdown->keypair_derand_total.min,
          (unsigned long)breakdown->keypair_derand_total.max);
   print_report_separator();
@@ -489,9 +498,9 @@ static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
   print_breakdown_row("pack(pk,sk)", &breakdown->pack, rebuild_avg);
   print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
   print_report_separator();
-  printf("indcpa_total avg = %llu, rebuild_total avg = %llu\r\n",
-         (unsigned long long)indcpa_avg,
-         (unsigned long long)rebuild_avg);
+  printf("indcpa_total avg = %lu, rebuild_total avg = %lu\r\n",
+         cycle_u64_to_printable_ul(indcpa_avg),
+         cycle_u64_to_printable_ul(rebuild_avg));
   printf("\r\n");
 }
 
