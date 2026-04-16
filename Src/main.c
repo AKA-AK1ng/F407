@@ -91,6 +91,7 @@ typedef struct {
 #define KEM_CYCLES_COL_WIDTH 12
 #define KEM_MISMATCH_COL_WIDTH 8
 #define BENCH_RUN_LOCATION "STM32F407 MCU (Src/main.c)"
+#define PROGRESS_UPDATE_INTERVAL_ROUNDS 100u
 /* Simple coprime multipliers for deterministic, non-constant per-round/per-index byte patterns. */
 #define DERAND_ROUND_MULTIPLIER 17u
 #define DERAND_INDEX_MULTIPLIER 31u
@@ -131,6 +132,7 @@ static uint64_t average_cycle_stat(const cycle_stat_t *stat);
 static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round);
 static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint64_t total_avg);
 static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown);
+static void print_round_progress(const char *stage, uint32_t completed_rounds, uint32_t total_rounds, uint32_t *next_progress_round);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -184,6 +186,7 @@ static void run_kyber_benchmark(uint32_t rounds,
   int keygen_ret;
   int enc_ret;
   int dec_ret;
+  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
 
   *keygen_total = 0;
   *encaps_total = 0;
@@ -201,6 +204,7 @@ static void run_kyber_benchmark(uint32_t rounds,
     elapsed_cycles = DWT->CYCCNT - t0;
     if(keygen_ret != 0) {
       (*error_count)++;
+      print_round_progress("KEM", round + 1u, rounds, &next_progress_round);
       continue;
     }
     *keygen_total += (uint64_t)elapsed_cycles;
@@ -211,6 +215,7 @@ static void run_kyber_benchmark(uint32_t rounds,
     elapsed_cycles = DWT->CYCCNT - t0;
     if(enc_ret != 0) {
       (*error_count)++;
+      print_round_progress("KEM", round + 1u, rounds, &next_progress_round);
       continue;
     }
     *encaps_total += (uint64_t)elapsed_cycles;
@@ -224,6 +229,8 @@ static void run_kyber_benchmark(uint32_t rounds,
     if((dec_ret != KYBER_DEC_SUCCESS) || (memcmp(ss1, ss2, pqcrystals_kyber512_ref_BYTES) != 0)) {
       (*mismatch_count)++;
     }
+
+    print_round_progress("KEM", round + 1u, rounds, &next_progress_round);
   }
 }
 
@@ -325,6 +332,19 @@ static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint
          (unsigned long long)(pct_x100 % 100ULL));
 }
 
+static void print_round_progress(const char *stage, uint32_t completed_rounds, uint32_t total_rounds, uint32_t *next_progress_round)
+{
+  if((completed_rounds >= *next_progress_round) || (completed_rounds == total_rounds)) {
+    printf("[PROGRESS][%s] round %lu/%lu\r\n",
+           stage,
+           (unsigned long)completed_rounds,
+           (unsigned long)total_rounds);
+    if(completed_rounds >= *next_progress_round) {
+      *next_progress_round += PROGRESS_UPDATE_INTERVAL_ROUNDS;
+    }
+  }
+}
+
 static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
                                                  kyber_keygen_breakdown_t *breakdown,
                                                  uint32_t *error_count)
@@ -343,6 +363,7 @@ static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
   uint8_t nonce;
   uint32_t t0;
   uint32_t tstart;
+  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
 
   init_cycle_stat(&breakdown->keypair_total);
   init_cycle_stat(&breakdown->keypair_derand_total);
@@ -363,6 +384,7 @@ static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
     t0 = DWT->CYCCNT;
     if(pqcrystals_kyber512_ref_keypair(pk, sk) != 0) {
       (*error_count)++;
+      print_round_progress("KEYGEN_BREAKDOWN", round + 1u, rounds, &next_progress_round);
       continue;
     }
     add_cycle_sample(&breakdown->keypair_total, DWT->CYCCNT - t0);
@@ -430,6 +452,7 @@ static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
     memcpy(pk + KYBER_POLYVECBYTES, publicseed, KYBER_SYMBYTES);
     add_cycle_sample(&breakdown->pack, DWT->CYCCNT - t0);
     add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
+    print_round_progress("KEYGEN_BREAKDOWN", round + 1u, rounds, &next_progress_round);
   }
 }
 
