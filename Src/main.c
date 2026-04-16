@@ -72,6 +72,8 @@ void SystemClock_Config(void);
 static void run_kem_comparison_benchmark(void);
 static void enable_cycle_counter(void);
 static void run_kyber_benchmark(uint32_t rounds, uint64_t *keygen_total, uint64_t *encaps_total, uint64_t *decaps_total, uint32_t *mismatch_count);
+static void print_report_separator(void);
+static void print_kyber_data_sizes(void);
 static void print_kem_summary_row(const kem_summary_t *summary, uint32_t rounds);
 /* USER CODE END PFP */
 
@@ -145,6 +147,34 @@ static void run_kyber_benchmark(uint32_t rounds,
   }
 }
 
+static void print_report_separator(void)
+{
+  printf("%s", PROFILE_SEPARATOR);
+}
+
+static void print_kyber_data_sizes(void)
+{
+  printf(">>> PART 0: Protocol Data Sizes (Serialized/Wire Format)\r\n");
+  print_report_separator();
+  printf("%-35s %-15s\r\n", "Component", "Size (Bytes)");
+  print_report_separator();
+
+  printf("[Kyber512] Public Key (pk):\r\n");
+  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_PUBLICKEYBYTES", (unsigned long)pqcrystals_kyber512_ref_PUBLICKEYBYTES);
+
+  printf("[Kyber512] Secret Key (sk):\r\n");
+  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_SECRETKEYBYTES", (unsigned long)pqcrystals_kyber512_ref_SECRETKEYBYTES);
+
+  printf("[Kyber512] Ciphertext (ct):\r\n");
+  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_CIPHERTEXTBYTES", (unsigned long)pqcrystals_kyber512_ref_CIPHERTEXTBYTES);
+
+  printf("[Kyber512] Shared Secret (ss):\r\n");
+  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_BYTES", (unsigned long)pqcrystals_kyber512_ref_BYTES);
+
+  print_report_separator();
+  printf("\r\n");
+}
+
 static void print_kem_summary_row(const kem_summary_t *summary, uint32_t rounds)
 {
   if(rounds == 0u) {
@@ -174,7 +204,10 @@ static void run_kem_comparison_benchmark(void)
     .mismatch_count = 0
   };
 
-  printf("\r\n=== Kyber512 Cycles Quick Benchmark (%lu rounds) ===\r\n", (unsigned long)BENCH_ROUNDS);
+  printf("\r\n=== Kyber512 Comprehensive Benchmark Report ===\r\n");
+  printf("Rounds: %lu\r\n\r\n", (unsigned long)BENCH_ROUNDS);
+  print_kyber_data_sizes();
+
   enable_cycle_counter();
 
   run_kyber_benchmark(BENCH_ROUNDS,
@@ -183,7 +216,8 @@ static void run_kem_comparison_benchmark(void)
                       &kyber_summary.decaps_cycles,
                       &kyber_summary.mismatch_count);
 
-  printf("%s", PROFILE_SEPARATOR);
+  printf(">>> PART 1: KEM Full Flow Summary (IND-CCA2)\r\n");
+  print_report_separator();
   printf("%-*s | %-*s | %-*s | %-*s | %-*s\r\n",
          KEM_SCHEME_COL_WIDTH,
          "Scheme",
@@ -195,9 +229,11 @@ static void run_kem_comparison_benchmark(void)
          "Decaps",
          KEM_MISMATCH_COL_WIDTH,
          "Mismatch");
-  printf("%s", PROFILE_SEPARATOR);
+  print_report_separator();
   print_kem_summary_row(&kyber_summary, BENCH_ROUNDS);
-  printf("%s\r\n", PROFILE_SEPARATOR);
+  print_report_separator();
+  printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)kyber_summary.mismatch_count);
+  printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
 /* USER CODE END 0 */
 
@@ -220,7 +256,7 @@ int main(void)
   printf("=========================\r\n");
   printf("  KYBER TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
-  printf("CMD: C=RUN KYBER512 CYCLE TABLE (%lu rounds)\r\n", (unsigned long)BENCH_ROUNDS);
+  printf("CMD: C=RUN KYBER512 COMPREHENSIVE REPORT (%lu rounds)\r\n", (unsigned long)BENCH_ROUNDS);
   printf("BUILD MODE: KYBER-ONLY BENCHMARK\r\n");
   printf("=========================\r\n");
   /* USER CODE END 2 */
