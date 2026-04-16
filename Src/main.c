@@ -90,6 +90,7 @@ typedef struct {
 #define KEM_SCHEME_COL_WIDTH 12
 #define KEM_CYCLES_COL_WIDTH 12
 #define KEM_MISMATCH_COL_WIDTH 8
+#define BENCH_RUN_LOCATION "STM32F407 MCU (Src/main.c)"
 /* Simple coprime multipliers for deterministic, non-constant per-round/per-index byte patterns. */
 #define DERAND_ROUND_MULTIPLIER 17u
 #define DERAND_INDEX_MULTIPLIER 31u
@@ -489,6 +490,7 @@ static void run_kem_comparison_benchmark(void)
   uint32_t keygen_breakdown_error_count = 0u;
 
   printf("\r\n=== Kyber512 Comprehensive Benchmark Report ===\r\n");
+  printf("Run Location: %s\r\n", BENCH_RUN_LOCATION);
   printf("Rounds: %lu\r\n\r\n", (unsigned long)BENCH_ROUNDS);
   print_kyber_data_sizes();
 
@@ -551,6 +553,8 @@ int main(void)
   printf("=========================\r\n");
   printf("  KYBER TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
+  printf("RUN LOCATION: %s\r\n", BENCH_RUN_LOCATION);
+  printf("TEST ROUNDS: %lu\r\n", (unsigned long)BENCH_ROUNDS);
   printf("CMD: C=RUN KYBER512 COMPREHENSIVE REPORT (%lu rounds)\r\n", (unsigned long)BENCH_ROUNDS);
   printf("BUILD MODE: KYBER-ONLY BENCHMARK\r\n");
   printf("=========================\r\n");
