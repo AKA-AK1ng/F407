@@ -84,6 +84,7 @@ int __io_putchar(int ch)
 
 int fputc(int ch, FILE *f)
 {
+  /* UART stdout only: FILE stream selection is intentionally ignored. */
   (void)f;
   return __io_putchar(ch);
 }
