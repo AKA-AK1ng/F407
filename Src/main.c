@@ -76,6 +76,33 @@ typedef struct {
   cycle_stat_t indcpa_rebuild_total;
 } kyber_keygen_breakdown_t;
 
+typedef struct {
+  cycle_stat_t indcpa_total;
+  cycle_stat_t unpack_msg;
+  cycle_stat_t gen_at;
+  cycle_stat_t sample;
+  cycle_stat_t ntt;
+  cycle_stat_t arith_u;
+  cycle_stat_t arith_v;
+  cycle_stat_t invntt;
+  cycle_stat_t arith_add;
+  cycle_stat_t arith_reduce;
+  cycle_stat_t pack;
+  cycle_stat_t indcpa_rebuild_total;
+} kyber_encrypt_breakdown_t;
+
+typedef struct {
+  cycle_stat_t indcpa_total;
+  cycle_stat_t unpack;
+  cycle_stat_t ntt;
+  cycle_stat_t arith_su;
+  cycle_stat_t arith_invntt;
+  cycle_stat_t arith_sub;
+  cycle_stat_t arith_reduce;
+  cycle_stat_t decode;
+  cycle_stat_t indcpa_rebuild_total;
+} kyber_decrypt_breakdown_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -127,12 +154,20 @@ static void print_kem_summary_row(const kem_summary_t *summary);
 static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
                                                  kyber_keygen_breakdown_t *breakdown,
                                                  uint32_t *error_count);
+static void run_kyber_encrypt_breakdown_benchmark(uint32_t rounds,
+                                                  kyber_encrypt_breakdown_t *breakdown,
+                                                  uint32_t *error_count);
+static void run_kyber_decrypt_breakdown_benchmark(uint32_t rounds,
+                                                  kyber_decrypt_breakdown_t *breakdown,
+                                                  uint32_t *error_count);
 static void init_cycle_stat(cycle_stat_t *stat);
 static void add_cycle_sample(cycle_stat_t *stat, uint32_t cycles);
 static uint64_t average_cycle_stat(const cycle_stat_t *stat);
 static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round);
 static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint64_t total_avg);
 static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown);
+static void print_encrypt_breakdown(const kyber_encrypt_breakdown_t *breakdown);
+static void print_decrypt_breakdown(const kyber_decrypt_breakdown_t *breakdown);
 static void print_round_progress(const char *stage, uint32_t completed_rounds, uint32_t total_rounds, uint32_t *next_progress_round);
 /* USER CODE END PFP */
 
@@ -518,6 +553,246 @@ static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
   printf("\r\n");
 }
 
+static void run_kyber_encrypt_breakdown_benchmark(uint32_t rounds,
+                                                  kyber_encrypt_breakdown_t *breakdown,
+                                                  uint32_t *error_count)
+{
+  static uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES];
+  static uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES];
+  static uint8_t c[KYBER_INDCPA_BYTES];
+  static uint8_t m[KYBER_INDCPA_MSGBYTES];
+  static uint8_t coins[KYBER_SYMBYTES];
+  static uint8_t keycoins[2 * KYBER_SYMBYTES];
+  static polyvec sp;
+  static polyvec pkpv;
+  static polyvec ep;
+  static polyvec at[KYBER_K];
+  static polyvec b;
+  static poly v;
+  static poly k;
+  static poly epp;
+  uint8_t seed[KYBER_SYMBYTES];
+  uint8_t nonce;
+  uint32_t t0;
+  uint32_t tstart;
+  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
+
+  init_cycle_stat(&breakdown->indcpa_total);
+  init_cycle_stat(&breakdown->unpack_msg);
+  init_cycle_stat(&breakdown->gen_at);
+  init_cycle_stat(&breakdown->sample);
+  init_cycle_stat(&breakdown->ntt);
+  init_cycle_stat(&breakdown->arith_u);
+  init_cycle_stat(&breakdown->arith_v);
+  init_cycle_stat(&breakdown->invntt);
+  init_cycle_stat(&breakdown->arith_add);
+  init_cycle_stat(&breakdown->arith_reduce);
+  init_cycle_stat(&breakdown->pack);
+  init_cycle_stat(&breakdown->indcpa_rebuild_total);
+  *error_count = 0u;
+
+  for(uint32_t round = 0; round < rounds; round++) {
+    fill_deterministic_bytes(keycoins, 2 * KYBER_SYMBYTES, round);
+    fill_deterministic_bytes(m, KYBER_INDCPA_MSGBYTES, round + 1u);
+    fill_deterministic_bytes(coins, KYBER_SYMBYTES, round + 2u);
+    indcpa_keypair_derand(pk, sk, keycoins);
+
+    t0 = DWT->CYCCNT;
+    indcpa_enc(c, m, pk, coins);
+    add_cycle_sample(&breakdown->indcpa_total, DWT->CYCCNT - t0);
+
+    tstart = DWT->CYCCNT;
+    t0 = DWT->CYCCNT;
+    polyvec_frombytes(&pkpv, pk);
+    memcpy(seed, pk + KYBER_POLYVECBYTES, KYBER_SYMBYTES);
+    poly_frommsg(&k, m);
+    add_cycle_sample(&breakdown->unpack_msg, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    gen_matrix(at, seed, 1);
+    add_cycle_sample(&breakdown->gen_at, DWT->CYCCNT - t0);
+
+    nonce = 0;
+    t0 = DWT->CYCCNT;
+    for(uint32_t i = 0; i < KYBER_K; i++) {
+      poly_getnoise_eta1(sp.vec + i, coins, nonce++);
+    }
+    for(uint32_t i = 0; i < KYBER_K; i++) {
+      poly_getnoise_eta2(ep.vec + i, coins, nonce++);
+    }
+    poly_getnoise_eta2(&epp, coins, nonce++);
+    add_cycle_sample(&breakdown->sample, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_ntt(&sp);
+    add_cycle_sample(&breakdown->ntt, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    for(uint32_t i = 0; i < KYBER_K; i++) {
+      polyvec_basemul_acc_montgomery(&b.vec[i], &at[i], &sp);
+    }
+    add_cycle_sample(&breakdown->arith_u, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_basemul_acc_montgomery(&v, &pkpv, &sp);
+    add_cycle_sample(&breakdown->arith_v, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_invntt_tomont(&b);
+    poly_invntt_tomont(&v);
+    add_cycle_sample(&breakdown->invntt, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_add(&b, &b, &ep);
+    poly_add(&v, &v, &epp);
+    poly_add(&v, &v, &k);
+    add_cycle_sample(&breakdown->arith_add, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_reduce(&b);
+    poly_reduce(&v);
+    add_cycle_sample(&breakdown->arith_reduce, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_compress(c, &b);
+    poly_compress(c + KYBER_POLYVECCOMPRESSEDBYTES, &v);
+    add_cycle_sample(&breakdown->pack, DWT->CYCCNT - t0);
+    add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
+    print_round_progress("ENC_BREAKDOWN", round + 1u, rounds, &next_progress_round);
+  }
+}
+
+static void print_encrypt_breakdown(const kyber_encrypt_breakdown_t *breakdown)
+{
+  uint64_t indcpa_avg = average_cycle_stat(&breakdown->indcpa_total);
+  uint64_t rebuild_avg = average_cycle_stat(&breakdown->indcpa_rebuild_total);
+
+  printf(">>> PART 2: Kyber512 Encrypt Breakdown (Cycles)\r\n");
+  print_report_separator();
+  printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
+  print_report_separator();
+  print_breakdown_row("unpack(pk)+msg", &breakdown->unpack_msg, rebuild_avg);
+  print_breakdown_row("gen_matrix(A^T)", &breakdown->gen_at, rebuild_avg);
+  print_breakdown_row("sample(r,e1,e2)", &breakdown->sample, rebuild_avg);
+  print_breakdown_row("ntt(r)", &breakdown->ntt, rebuild_avg);
+  print_breakdown_row("Arith (A^T*r)", &breakdown->arith_u, rebuild_avg);
+  print_breakdown_row("Arith (pk*r)", &breakdown->arith_v, rebuild_avg);
+  print_breakdown_row("invntt(u,v)", &breakdown->invntt, rebuild_avg);
+  print_breakdown_row("Arith (+e,+m)", &breakdown->arith_add, rebuild_avg);
+  print_breakdown_row("Arith (reduce)", &breakdown->arith_reduce, rebuild_avg);
+  print_breakdown_row("pack(ct)", &breakdown->pack, rebuild_avg);
+  print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
+  print_report_separator();
+  printf("indcpa_enc avg = %lu, rebuild_total avg = %lu\r\n",
+         cycle_u64_to_printable_ul(indcpa_avg),
+         cycle_u64_to_printable_ul(rebuild_avg));
+  printf("\r\n");
+}
+
+static void run_kyber_decrypt_breakdown_benchmark(uint32_t rounds,
+                                                  kyber_decrypt_breakdown_t *breakdown,
+                                                  uint32_t *error_count)
+{
+  static uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES];
+  static uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES];
+  static uint8_t c[KYBER_INDCPA_BYTES];
+  static uint8_t m[KYBER_INDCPA_MSGBYTES];
+  static uint8_t m_ref[KYBER_INDCPA_MSGBYTES];
+  static uint8_t coins[KYBER_SYMBYTES];
+  static uint8_t keycoins[2 * KYBER_SYMBYTES];
+  static polyvec b;
+  static polyvec skpv;
+  static poly v;
+  static poly mp;
+  uint32_t t0;
+  uint32_t tstart;
+  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
+
+  init_cycle_stat(&breakdown->indcpa_total);
+  init_cycle_stat(&breakdown->unpack);
+  init_cycle_stat(&breakdown->ntt);
+  init_cycle_stat(&breakdown->arith_su);
+  init_cycle_stat(&breakdown->arith_invntt);
+  init_cycle_stat(&breakdown->arith_sub);
+  init_cycle_stat(&breakdown->arith_reduce);
+  init_cycle_stat(&breakdown->decode);
+  init_cycle_stat(&breakdown->indcpa_rebuild_total);
+  *error_count = 0u;
+
+  for(uint32_t round = 0; round < rounds; round++) {
+    fill_deterministic_bytes(keycoins, 2 * KYBER_SYMBYTES, round);
+    fill_deterministic_bytes(m, KYBER_INDCPA_MSGBYTES, round + 1u);
+    fill_deterministic_bytes(coins, KYBER_SYMBYTES, round + 2u);
+    indcpa_keypair_derand(pk, sk, keycoins);
+    indcpa_enc(c, m, pk, coins);
+
+    t0 = DWT->CYCCNT;
+    indcpa_dec(m_ref, c, sk);
+    add_cycle_sample(&breakdown->indcpa_total, DWT->CYCCNT - t0);
+
+    tstart = DWT->CYCCNT;
+    t0 = DWT->CYCCNT;
+    polyvec_decompress(&b, c);
+    poly_decompress(&v, c + KYBER_POLYVECCOMPRESSEDBYTES);
+    polyvec_frombytes(&skpv, sk);
+    add_cycle_sample(&breakdown->unpack, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_ntt(&b);
+    add_cycle_sample(&breakdown->ntt, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_basemul_acc_montgomery(&mp, &skpv, &b);
+    add_cycle_sample(&breakdown->arith_su, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    poly_invntt_tomont(&mp);
+    add_cycle_sample(&breakdown->arith_invntt, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    poly_sub(&mp, &v, &mp);
+    add_cycle_sample(&breakdown->arith_sub, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    poly_reduce(&mp);
+    add_cycle_sample(&breakdown->arith_reduce, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    poly_tomsg(m, &mp);
+    add_cycle_sample(&breakdown->decode, DWT->CYCCNT - t0);
+    add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
+
+    if(memcmp(m, m_ref, KYBER_INDCPA_MSGBYTES) != 0) {
+      (*error_count)++;
+    }
+    print_round_progress("DEC_BREAKDOWN", round + 1u, rounds, &next_progress_round);
+  }
+}
+
+static void print_decrypt_breakdown(const kyber_decrypt_breakdown_t *breakdown)
+{
+  uint64_t indcpa_avg = average_cycle_stat(&breakdown->indcpa_total);
+  uint64_t rebuild_avg = average_cycle_stat(&breakdown->indcpa_rebuild_total);
+
+  printf(">>> PART 3: Kyber512 Decrypt Breakdown (Cycles)\r\n");
+  print_report_separator();
+  printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
+  print_report_separator();
+  print_breakdown_row("unpack(ct,sk)", &breakdown->unpack, rebuild_avg);
+  print_breakdown_row("ntt(u)", &breakdown->ntt, rebuild_avg);
+  print_breakdown_row("Arith (s*u)", &breakdown->arith_su, rebuild_avg);
+  print_breakdown_row("Arith (invntt)", &breakdown->arith_invntt, rebuild_avg);
+  print_breakdown_row("Arith (v-su)", &breakdown->arith_sub, rebuild_avg);
+  print_breakdown_row("Arith (reduce)", &breakdown->arith_reduce, rebuild_avg);
+  print_breakdown_row("decode(msg)", &breakdown->decode, rebuild_avg);
+  print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
+  print_report_separator();
+  printf("indcpa_dec avg = %lu, rebuild_total avg = %lu\r\n",
+         cycle_u64_to_printable_ul(indcpa_avg),
+         cycle_u64_to_printable_ul(rebuild_avg));
+  printf("\r\n");
+}
+
 static void run_kem_comparison_benchmark(void)
 {
   kem_summary_t kyber_summary = {
@@ -532,7 +807,11 @@ static void run_kem_comparison_benchmark(void)
     .mismatch_count = 0
   };
   kyber_keygen_breakdown_t keygen_breakdown;
+  kyber_encrypt_breakdown_t encrypt_breakdown;
+  kyber_decrypt_breakdown_t decrypt_breakdown;
   uint32_t keygen_breakdown_error_count = 0u;
+  uint32_t encrypt_breakdown_error_count = 0u;
+  uint32_t decrypt_breakdown_error_count = 0u;
 
   printf("\r\n=== Kyber512 Comprehensive Benchmark Report ===\r\n");
   printf("Rounds: %lu\r\n\r\n", (unsigned long)BENCH_ROUNDS);
@@ -552,10 +831,18 @@ static void run_kem_comparison_benchmark(void)
   run_kyber_keygen_breakdown_benchmark(BENCH_ROUNDS,
                                        &keygen_breakdown,
                                        &keygen_breakdown_error_count);
+  run_kyber_encrypt_breakdown_benchmark(BENCH_ROUNDS,
+                                        &encrypt_breakdown,
+                                        &encrypt_breakdown_error_count);
+  run_kyber_decrypt_breakdown_benchmark(BENCH_ROUNDS,
+                                        &decrypt_breakdown,
+                                        &decrypt_breakdown_error_count);
 
   print_keygen_breakdown(&keygen_breakdown);
+  print_encrypt_breakdown(&encrypt_breakdown);
+  print_decrypt_breakdown(&decrypt_breakdown);
 
-  printf(">>> PART 2: KEM Full Flow Summary (IND-CCA2)\r\n");
+  printf(">>> PART 4: KEM Full Flow Summary (IND-CCA2)\r\n");
   print_report_separator();
   printf("%-*s | %-*s | %-*s | %-*s | %-*s\r\n",
          KEM_SCHEME_COL_WIDTH,
@@ -573,6 +860,8 @@ static void run_kem_comparison_benchmark(void)
   print_report_separator();
   printf("KEM operation error count: %lu\r\n", (unsigned long)kyber_summary.error_count);
   printf("KeyGen breakdown error count: %lu\r\n", (unsigned long)keygen_breakdown_error_count);
+  printf("Encrypt breakdown error count: %lu\r\n", (unsigned long)encrypt_breakdown_error_count);
+  printf("Decrypt breakdown error count: %lu\r\n", (unsigned long)decrypt_breakdown_error_count);
   printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)kyber_summary.mismatch_count);
   printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
