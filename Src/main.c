@@ -28,6 +28,12 @@
 #include "stdio.h"
 #include "string.h"
 #include "../kyber_ref/api.h"
+#include "../kyber_ref/params.h"
+#include "../kyber_ref/indcpa.h"
+#include "../kyber_ref/polyvec.h"
+#include "../kyber_ref/poly.h"
+#include "../kyber_ref/symmetric.h"
+#include "../kyber_ref/randombytes.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,6 +50,29 @@ typedef struct {
   uint32_t error_count;
   uint32_t mismatch_count;
 } kem_summary_t;
+
+typedef struct {
+  uint64_t total;
+  uint32_t min;
+  uint32_t max;
+  uint32_t count;
+} cycle_stat_t;
+
+typedef struct {
+  cycle_stat_t keypair_total;
+  cycle_stat_t keypair_derand_total;
+  cycle_stat_t rng;
+  cycle_stat_t indcpa_total;
+  cycle_stat_t kem_tail;
+  cycle_stat_t seed_expand;
+  cycle_stat_t gen_matrix;
+  cycle_stat_t sample;
+  cycle_stat_t ntt;
+  cycle_stat_t matvec;
+  cycle_stat_t add_reduce;
+  cycle_stat_t pack;
+  cycle_stat_t indcpa_rebuild_total;
+} kyber_keygen_breakdown_t;
 
 /* USER CODE END PTD */
 
@@ -89,6 +118,14 @@ static void print_report_separator(void);
 static void print_kyber_data_sizes(void);
 static uint64_t safe_average(uint64_t total_cycles, uint32_t count);
 static void print_kem_summary_row(const kem_summary_t *summary);
+static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
+                                                 kyber_keygen_breakdown_t *breakdown,
+                                                 uint32_t *error_count);
+static void init_cycle_stat(cycle_stat_t *stat);
+static void add_cycle_sample(cycle_stat_t *stat, uint32_t cycles);
+static uint64_t average_cycle_stat(const cycle_stat_t *stat);
+static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round);
+static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -236,6 +273,200 @@ static void print_kem_summary_row(const kem_summary_t *summary)
          (unsigned long)summary->mismatch_count);
 }
 
+static void init_cycle_stat(cycle_stat_t *stat)
+{
+  stat->total = 0ULL;
+  stat->min = 0xFFFFFFFFu;
+  stat->max = 0u;
+  stat->count = 0u;
+}
+
+static void add_cycle_sample(cycle_stat_t *stat, uint32_t cycles)
+{
+  stat->total += (uint64_t)cycles;
+  if(cycles < stat->min) {
+    stat->min = cycles;
+  }
+  if(cycles > stat->max) {
+    stat->max = cycles;
+  }
+  stat->count++;
+}
+
+static uint64_t average_cycle_stat(const cycle_stat_t *stat)
+{
+  if(stat->count == 0u) {
+    return 0ULL;
+  }
+  return stat->total / stat->count;
+}
+
+static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round)
+{
+  for(uint32_t i = 0; i < len; i++) {
+    buf[i] = (uint8_t)((round * 17u) + (i * 31u) + (round >> 3));
+  }
+}
+
+static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
+                                                 kyber_keygen_breakdown_t *breakdown,
+                                                 uint32_t *error_count)
+{
+  static uint8_t pk[pqcrystals_kyber512_ref_PUBLICKEYBYTES];
+  static uint8_t sk[pqcrystals_kyber512_ref_SECRETKEYBYTES];
+  static uint8_t coins64[2 * KYBER_SYMBYTES];
+  static uint8_t coins32[KYBER_SYMBYTES];
+  static uint8_t buf[2 * KYBER_SYMBYTES];
+  static polyvec a[KYBER_K];
+  static polyvec e;
+  static polyvec pkpv;
+  static polyvec skpv;
+  const uint8_t *publicseed = buf;
+  const uint8_t *noiseseed = buf + KYBER_SYMBYTES;
+  uint8_t nonce;
+  uint32_t t0;
+  uint32_t tstart;
+
+  init_cycle_stat(&breakdown->keypair_total);
+  init_cycle_stat(&breakdown->keypair_derand_total);
+  init_cycle_stat(&breakdown->rng);
+  init_cycle_stat(&breakdown->indcpa_total);
+  init_cycle_stat(&breakdown->kem_tail);
+  init_cycle_stat(&breakdown->seed_expand);
+  init_cycle_stat(&breakdown->gen_matrix);
+  init_cycle_stat(&breakdown->sample);
+  init_cycle_stat(&breakdown->ntt);
+  init_cycle_stat(&breakdown->matvec);
+  init_cycle_stat(&breakdown->add_reduce);
+  init_cycle_stat(&breakdown->pack);
+  init_cycle_stat(&breakdown->indcpa_rebuild_total);
+  *error_count = 0u;
+
+  for(uint32_t round = 0; round < rounds; round++) {
+    t0 = DWT->CYCCNT;
+    if(pqcrystals_kyber512_ref_keypair(pk, sk) != 0) {
+      (*error_count)++;
+      continue;
+    }
+    add_cycle_sample(&breakdown->keypair_total, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    randombytes(coins64, 2 * KYBER_SYMBYTES);
+    add_cycle_sample(&breakdown->rng, DWT->CYCCNT - t0);
+
+    fill_deterministic_bytes(coins64, 2 * KYBER_SYMBYTES, round);
+    tstart = DWT->CYCCNT;
+    t0 = DWT->CYCCNT;
+    indcpa_keypair_derand(pk, sk, coins64);
+    add_cycle_sample(&breakdown->indcpa_total, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    memcpy(sk + KYBER_INDCPA_SECRETKEYBYTES, pk, KYBER_PUBLICKEYBYTES);
+    hash_h(sk + KYBER_SECRETKEYBYTES - 2 * KYBER_SYMBYTES, pk, KYBER_PUBLICKEYBYTES);
+    memcpy(sk + KYBER_SECRETKEYBYTES - KYBER_SYMBYTES, coins64 + KYBER_SYMBYTES, KYBER_SYMBYTES);
+    add_cycle_sample(&breakdown->kem_tail, DWT->CYCCNT - t0);
+    add_cycle_sample(&breakdown->keypair_derand_total, DWT->CYCCNT - tstart);
+
+    fill_deterministic_bytes(coins32, KYBER_SYMBYTES, round);
+    tstart = DWT->CYCCNT;
+    memcpy(buf, coins32, KYBER_SYMBYTES);
+    buf[KYBER_SYMBYTES] = KYBER_K;
+
+    t0 = DWT->CYCCNT;
+    hash_g(buf, buf, KYBER_SYMBYTES + 1);
+    add_cycle_sample(&breakdown->seed_expand, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    gen_matrix(a, publicseed, 0);
+    add_cycle_sample(&breakdown->gen_matrix, DWT->CYCCNT - t0);
+
+    nonce = 0;
+    t0 = DWT->CYCCNT;
+    for(uint32_t i = 0; i < KYBER_K; i++) {
+      poly_getnoise_eta1(&skpv.vec[i], noiseseed, nonce++);
+    }
+    for(uint32_t i = 0; i < KYBER_K; i++) {
+      poly_getnoise_eta1(&e.vec[i], noiseseed, nonce++);
+    }
+    add_cycle_sample(&breakdown->sample, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_ntt(&skpv);
+    polyvec_ntt(&e);
+    add_cycle_sample(&breakdown->ntt, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    for(uint32_t i = 0; i < KYBER_K; i++) {
+      polyvec_basemul_acc_montgomery(&pkpv.vec[i], &a[i], &skpv);
+      poly_tomont(&pkpv.vec[i]);
+    }
+    add_cycle_sample(&breakdown->matvec, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_add(&pkpv, &pkpv, &e);
+    polyvec_reduce(&pkpv);
+    add_cycle_sample(&breakdown->add_reduce, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    polyvec_tobytes(sk, &skpv);
+    polyvec_tobytes(pk, &pkpv);
+    memcpy(pk + KYBER_POLYVECBYTES, publicseed, KYBER_SYMBYTES);
+    add_cycle_sample(&breakdown->pack, DWT->CYCCNT - t0);
+    add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
+  }
+}
+
+static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
+{
+  uint64_t derand_avg = average_cycle_stat(&breakdown->keypair_derand_total);
+  uint64_t indcpa_avg = average_cycle_stat(&breakdown->indcpa_total);
+  uint64_t rebuild_avg = average_cycle_stat(&breakdown->indcpa_rebuild_total);
+  uint64_t rng_avg = average_cycle_stat(&breakdown->rng);
+  uint64_t keypair_avg = average_cycle_stat(&breakdown->keypair_total);
+
+  printf(">>> PART 1: Kyber512 KeyGen Breakdown (Cycles)\r\n");
+  print_report_separator();
+  printf("Baseline keypair (api): avg=%llu, min=%lu, max=%lu\r\n",
+         (unsigned long long)keypair_avg,
+         (unsigned long)breakdown->keypair_total.min,
+         (unsigned long)breakdown->keypair_total.max);
+  printf("RNG(randombytes 64B): avg=%llu\r\n", (unsigned long long)rng_avg);
+  printf("keypair_derand (reconstructed): avg=%llu, min=%lu, max=%lu\r\n",
+         (unsigned long long)derand_avg,
+         (unsigned long)breakdown->keypair_derand_total.min,
+         (unsigned long)breakdown->keypair_derand_total.max);
+  print_report_separator();
+  printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
+  print_report_separator();
+#define PRINT_BREAKDOWN_ROW(NAME, STAT, TOTAL) do { \
+    uint64_t _avg = average_cycle_stat(&(STAT)); \
+    uint64_t _pct_x100 = ((TOTAL) == 0ULL) ? 0ULL : ((_avg * 10000ULL) / (TOTAL)); \
+    printf("%-24s | %-14llu | %3llu.%02llu\r\n", \
+           (NAME), \
+           (unsigned long long)_avg, \
+           (unsigned long long)(_pct_x100 / 100ULL), \
+           (unsigned long long)(_pct_x100 % 100ULL)); \
+  } while(0)
+
+  PRINT_BREAKDOWN_ROW("indcpa_total", breakdown->indcpa_total, derand_avg);
+  PRINT_BREAKDOWN_ROW("kem_tail", breakdown->kem_tail, derand_avg);
+  print_report_separator();
+  PRINT_BREAKDOWN_ROW("seed_expand(hash_g)", breakdown->seed_expand, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("gen_matrix(A)", breakdown->gen_matrix, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("sample(s,e)", breakdown->sample, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("ntt(s,e)", breakdown->ntt, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("matvec+tomont", breakdown->matvec, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("add+reduce", breakdown->add_reduce, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("pack(pk,sk)", breakdown->pack, rebuild_avg);
+  PRINT_BREAKDOWN_ROW("rebuild_total", breakdown->indcpa_rebuild_total, rebuild_avg);
+#undef PRINT_BREAKDOWN_ROW
+  print_report_separator();
+  printf("indcpa_total avg = %llu, rebuild_total avg = %llu\r\n",
+         (unsigned long long)indcpa_avg,
+         (unsigned long long)rebuild_avg);
+  printf("\r\n");
+}
+
 static void run_kem_comparison_benchmark(void)
 {
   kem_summary_t kyber_summary = {
@@ -249,6 +480,8 @@ static void run_kem_comparison_benchmark(void)
     .error_count = 0,
     .mismatch_count = 0
   };
+  kyber_keygen_breakdown_t keygen_breakdown;
+  uint32_t keygen_breakdown_error_count = 0u;
 
   printf("\r\n=== Kyber512 Comprehensive Benchmark Report ===\r\n");
   printf("Rounds: %lu\r\n\r\n", (unsigned long)BENCH_ROUNDS);
@@ -265,8 +498,13 @@ static void run_kem_comparison_benchmark(void)
                       &kyber_summary.decaps_success_count,
                       &kyber_summary.error_count,
                       &kyber_summary.mismatch_count);
+  run_kyber_keygen_breakdown_benchmark(BENCH_ROUNDS,
+                                       &keygen_breakdown,
+                                       &keygen_breakdown_error_count);
 
-  printf(">>> PART 1: KEM Full Flow Summary (IND-CCA2)\r\n");
+  print_keygen_breakdown(&keygen_breakdown);
+
+  printf(">>> PART 2: KEM Full Flow Summary (IND-CCA2)\r\n");
   print_report_separator();
   printf("%-*s | %-*s | %-*s | %-*s | %-*s\r\n",
          KEM_SCHEME_COL_WIDTH,
@@ -283,6 +521,7 @@ static void run_kem_comparison_benchmark(void)
   print_kem_summary_row(&kyber_summary);
   print_report_separator();
   printf("KEM operation error count: %lu\r\n", (unsigned long)kyber_summary.error_count);
+  printf("KeyGen breakdown error count: %lu\r\n", (unsigned long)keygen_breakdown_error_count);
   printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)kyber_summary.mismatch_count);
   printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
