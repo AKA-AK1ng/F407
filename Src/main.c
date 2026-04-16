@@ -52,6 +52,7 @@ typedef struct {
 /* USER CODE BEGIN PM */
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
 #define BENCH_ROUNDS 1000u
+#define KYBER_DEC_SUCCESS 0
 #define KEM_SCHEME_COL_WIDTH 12
 #define KEM_CYCLES_COL_WIDTH 12
 #define KEM_MISMATCH_COL_WIDTH 8
@@ -84,7 +85,7 @@ int __io_putchar(int ch)
 
 int fputc(int ch, FILE *f)
 {
-  /* UART stdout only: FILE stream selection is intentionally ignored. */
+  /* UART stdout only: FILE parameter unused in embedded UART implementation. */
   (void)f;
   return __io_putchar(ch);
 }
@@ -138,7 +139,7 @@ static void run_kyber_benchmark(uint32_t rounds,
     dec_ret = pqcrystals_kyber512_ref_dec(ss2, ct, sk);
     *decaps_total += (uint64_t)(DWT->CYCCNT - t0);
 
-    if((dec_ret != 0) || (memcmp(ss1, ss2, pqcrystals_kyber512_ref_BYTES) != 0)) {
+    if((dec_ret != KYBER_DEC_SUCCESS) || (memcmp(ss1, ss2, pqcrystals_kyber512_ref_BYTES) != 0)) {
       (*mismatch_count)++;
     }
   }
@@ -165,7 +166,13 @@ static void print_kem_summary_row(const kem_summary_t *summary, uint32_t rounds)
 
 static void run_kem_comparison_benchmark(void)
 {
-  kem_summary_t kyber_summary = {"Kyber512", 0, 0, 0, 0};
+  kem_summary_t kyber_summary = {
+    .name = "Kyber512",
+    .keygen_cycles = 0,
+    .encaps_cycles = 0,
+    .decaps_cycles = 0,
+    .mismatch_count = 0
+  };
 
   printf("\r\n=== Kyber512 Cycles Quick Benchmark (%lu rounds) ===\r\n", (unsigned long)BENCH_ROUNDS);
   enable_cycle_counter();
