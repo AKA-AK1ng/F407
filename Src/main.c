@@ -90,6 +90,9 @@ typedef struct {
 #define KEM_SCHEME_COL_WIDTH 12
 #define KEM_CYCLES_COL_WIDTH 12
 #define KEM_MISMATCH_COL_WIDTH 8
+/* Simple coprime multipliers for deterministic, non-constant per-round/per-index byte patterns. */
+#define DERAND_ROUND_MULTIPLIER 17u
+#define DERAND_INDEX_MULTIPLIER 31u
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -125,6 +128,7 @@ static void init_cycle_stat(cycle_stat_t *stat);
 static void add_cycle_sample(cycle_stat_t *stat, uint32_t cycles);
 static uint64_t average_cycle_stat(const cycle_stat_t *stat);
 static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round);
+static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint64_t total_avg);
 static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown);
 /* USER CODE END PFP */
 
@@ -304,8 +308,20 @@ static uint64_t average_cycle_stat(const cycle_stat_t *stat)
 static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round)
 {
   for(uint32_t i = 0; i < len; i++) {
-    buf[i] = (uint8_t)((round * 17u) + (i * 31u) + (round >> 3));
+    /* Mix round and index so derand input is repeatable but not trivially constant across rounds. */
+    buf[i] = (uint8_t)((round * DERAND_ROUND_MULTIPLIER) + (i * DERAND_INDEX_MULTIPLIER) + (round >> 3));
   }
+}
+
+static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint64_t total_avg)
+{
+  uint64_t avg = average_cycle_stat(stat);
+  uint64_t pct_x100 = (total_avg == 0ULL) ? 0ULL : ((avg * 10000ULL) / total_avg);
+  printf("%-24s | %-14llu | %3llu.%02llu\r\n",
+         name,
+         (unsigned long long)avg,
+         (unsigned long long)(pct_x100 / 100ULL),
+         (unsigned long long)(pct_x100 % 100ULL));
 }
 
 static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
@@ -438,28 +454,17 @@ static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
   print_report_separator();
   printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
   print_report_separator();
-#define PRINT_BREAKDOWN_ROW(NAME, STAT, TOTAL) do { \
-    uint64_t _avg = average_cycle_stat(&(STAT)); \
-    uint64_t _pct_x100 = ((TOTAL) == 0ULL) ? 0ULL : ((_avg * 10000ULL) / (TOTAL)); \
-    printf("%-24s | %-14llu | %3llu.%02llu\r\n", \
-           (NAME), \
-           (unsigned long long)_avg, \
-           (unsigned long long)(_pct_x100 / 100ULL), \
-           (unsigned long long)(_pct_x100 % 100ULL)); \
-  } while(0)
-
-  PRINT_BREAKDOWN_ROW("indcpa_total", breakdown->indcpa_total, derand_avg);
-  PRINT_BREAKDOWN_ROW("kem_tail", breakdown->kem_tail, derand_avg);
+  print_breakdown_row("indcpa_total", &breakdown->indcpa_total, derand_avg);
+  print_breakdown_row("kem_tail", &breakdown->kem_tail, derand_avg);
   print_report_separator();
-  PRINT_BREAKDOWN_ROW("seed_expand(hash_g)", breakdown->seed_expand, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("gen_matrix(A)", breakdown->gen_matrix, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("sample(s,e)", breakdown->sample, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("ntt(s,e)", breakdown->ntt, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("matvec+tomont", breakdown->matvec, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("add+reduce", breakdown->add_reduce, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("pack(pk,sk)", breakdown->pack, rebuild_avg);
-  PRINT_BREAKDOWN_ROW("rebuild_total", breakdown->indcpa_rebuild_total, rebuild_avg);
-#undef PRINT_BREAKDOWN_ROW
+  print_breakdown_row("seed_expand(hash_g)", &breakdown->seed_expand, rebuild_avg);
+  print_breakdown_row("gen_matrix(A)", &breakdown->gen_matrix, rebuild_avg);
+  print_breakdown_row("sample(s,e)", &breakdown->sample, rebuild_avg);
+  print_breakdown_row("ntt(s,e)", &breakdown->ntt, rebuild_avg);
+  print_breakdown_row("matvec+tomont", &breakdown->matvec, rebuild_avg);
+  print_breakdown_row("add+reduce", &breakdown->add_reduce, rebuild_avg);
+  print_breakdown_row("pack(pk,sk)", &breakdown->pack, rebuild_avg);
+  print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
   print_report_separator();
   printf("indcpa_total avg = %llu, rebuild_total avg = %llu\r\n",
          (unsigned long long)indcpa_avg,
