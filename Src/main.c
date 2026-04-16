@@ -68,8 +68,10 @@ typedef struct {
   cycle_stat_t gen_matrix;
   cycle_stat_t sample;
   cycle_stat_t ntt;
-  cycle_stat_t matvec;
-  cycle_stat_t add_reduce;
+  cycle_stat_t arith_as;
+  cycle_stat_t arith_tomont;
+  cycle_stat_t arith_add_e;
+  cycle_stat_t arith_reduce;
   cycle_stat_t pack;
   cycle_stat_t indcpa_rebuild_total;
 } kyber_keygen_breakdown_t;
@@ -382,8 +384,10 @@ static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
   init_cycle_stat(&breakdown->gen_matrix);
   init_cycle_stat(&breakdown->sample);
   init_cycle_stat(&breakdown->ntt);
-  init_cycle_stat(&breakdown->matvec);
-  init_cycle_stat(&breakdown->add_reduce);
+  init_cycle_stat(&breakdown->arith_as);
+  init_cycle_stat(&breakdown->arith_tomont);
+  init_cycle_stat(&breakdown->arith_add_e);
+  init_cycle_stat(&breakdown->arith_reduce);
   init_cycle_stat(&breakdown->pack);
   init_cycle_stat(&breakdown->indcpa_rebuild_total);
   *error_count = 0u;
@@ -445,14 +449,22 @@ static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
     t0 = DWT->CYCCNT;
     for(uint32_t i = 0; i < KYBER_K; i++) {
       polyvec_basemul_acc_montgomery(&pkpv.vec[i], &a[i], &skpv);
+    }
+    add_cycle_sample(&breakdown->arith_as, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
+    for(uint32_t i = 0; i < KYBER_K; i++) {
       poly_tomont(&pkpv.vec[i]);
     }
-    add_cycle_sample(&breakdown->matvec, DWT->CYCCNT - t0);
+    add_cycle_sample(&breakdown->arith_tomont, DWT->CYCCNT - t0);
 
     t0 = DWT->CYCCNT;
     polyvec_add(&pkpv, &pkpv, &e);
+    add_cycle_sample(&breakdown->arith_add_e, DWT->CYCCNT - t0);
+
+    t0 = DWT->CYCCNT;
     polyvec_reduce(&pkpv);
-    add_cycle_sample(&breakdown->add_reduce, DWT->CYCCNT - t0);
+    add_cycle_sample(&breakdown->arith_reduce, DWT->CYCCNT - t0);
 
     t0 = DWT->CYCCNT;
     polyvec_tobytes(sk, &skpv);
@@ -493,8 +505,10 @@ static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
   print_breakdown_row("gen_matrix(A)", &breakdown->gen_matrix, rebuild_avg);
   print_breakdown_row("sample(s,e)", &breakdown->sample, rebuild_avg);
   print_breakdown_row("ntt(s,e)", &breakdown->ntt, rebuild_avg);
-  print_breakdown_row("matvec+tomont", &breakdown->matvec, rebuild_avg);
-  print_breakdown_row("add+reduce", &breakdown->add_reduce, rebuild_avg);
+  print_breakdown_row("Arith (A*s)", &breakdown->arith_as, rebuild_avg);
+  print_breakdown_row("Arith (toMont)", &breakdown->arith_tomont, rebuild_avg);
+  print_breakdown_row("Arith (+e)", &breakdown->arith_add_e, rebuild_avg);
+  print_breakdown_row("Arith (reduce)", &breakdown->arith_reduce, rebuild_avg);
   print_breakdown_row("pack(pk,sk)", &breakdown->pack, rebuild_avg);
   print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
   print_report_separator();
