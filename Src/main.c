@@ -120,6 +120,7 @@ static void run_kyber_benchmark(uint32_t rounds,
   static uint8_t ct[pqcrystals_kyber512_ref_CIPHERTEXTBYTES];
   static uint8_t ss1[pqcrystals_kyber512_ref_BYTES], ss2[pqcrystals_kyber512_ref_BYTES];
   uint32_t t0;
+  uint32_t elapsed_cycles;
   int keygen_ret;
   int enc_ret;
   int dec_ret;
@@ -133,19 +134,21 @@ static void run_kyber_benchmark(uint32_t rounds,
   {
     t0 = DWT->CYCCNT;
     keygen_ret = pqcrystals_kyber512_ref_keypair(pk, sk);
-    *keygen_total += (uint64_t)(DWT->CYCCNT - t0);
+    elapsed_cycles = DWT->CYCCNT - t0;
     if(keygen_ret != 0) {
       (*mismatch_count)++;
       continue;
     }
+    *keygen_total += (uint64_t)elapsed_cycles;
 
     t0 = DWT->CYCCNT;
     enc_ret = pqcrystals_kyber512_ref_enc(ct, ss1, pk);
-    *encaps_total += (uint64_t)(DWT->CYCCNT - t0);
+    elapsed_cycles = DWT->CYCCNT - t0;
     if(enc_ret != 0) {
       (*mismatch_count)++;
       continue;
     }
+    *encaps_total += (uint64_t)elapsed_cycles;
 
     t0 = DWT->CYCCNT;
     dec_ret = pqcrystals_kyber512_ref_dec(ss2, ct, sk);
