@@ -621,10 +621,19 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // 开机提示
   printf("=========================\r\n");
+#if KYBER_ONLY
   printf("  KYBER TEST SYSTEM READY\r\n");
+#else
+  printf("  MLWQ TEST SYSTEM READY\r\n");
+#endif
   printf("=========================\r\n");
+#if !KYBER_ONLY
+  printf("CMD: M=RUN COMPREHENSIVE SCALAR BENCHMARK (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+#endif
   printf("CMD: C=RUN KYBER512 CYCLE TABLE (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+#if KYBER_ONLY
   printf("BUILD MODE: KYBER-ONLY BENCHMARK\r\n");
+#endif
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
@@ -639,9 +648,19 @@ int main(void)
       {
         run_kem_comparison_benchmark();
       }
+#if !KYBER_ONLY
+      else if(cmd == 'M' || cmd == 'm')
+      {
+        run_mlwq_benchmark();
+      }
+#endif
       else
       {
+#if KYBER_ONLY
         printf("ONLY CMD 'C' IS ENABLED\r\n\r\n");
+#else
+        printf("ONLY CMD 'M'/'C' ARE ENABLED\r\n\r\n");
+#endif
       }
     }
   }
