@@ -102,4 +102,4 @@ KEM shared-secret mismatch count: 0
 ### 说明
 
 - `C` 命令当前仅测 Saber；
-- 测量统一使用 `DWT->CYCCNT`，轮次为 `MLWQ_BENCH_ROUNDS`（1000）。
+- 测量统一使用 `DWT->CYCCNT`，轮次为 `BENCH_ROUNDS`（1000）。

@@ -44,7 +44,18 @@ static void run_saber_decrypt_breakdown_benchmark(uint32_t rounds,saber_decrypt_
 
 int __io_putchar(int ch){ HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, 100); return ch; }
 int fputc(int ch, FILE *f){ (void)f; return __io_putchar(ch); }
-int randombytes(unsigned char *x, unsigned long long xlen){ unsigned long long generated=0ULL; while(generated<xlen){ uint32_t value; unsigned long long chunk=xlen-generated; if(HAL_RNG_GenerateRandomNumber(&hrng,&value)!=HAL_OK) return RNG_BAD_OUTBUF; if(chunk>sizeof(value)) chunk=sizeof(value); for(unsigned long long i=0;i<chunk;i++) x[generated+i]=(uint8_t)(value>>(8u*i)); generated+=chunk;} return RNG_SUCCESS; }
+int randombytes(unsigned char *x, unsigned long long xlen){
+  unsigned long long generated=0ULL;
+  while(generated<xlen){
+    uint32_t value;
+    unsigned long long chunk=xlen-generated;
+    if(HAL_RNG_GenerateRandomNumber(&hrng,&value)!=HAL_OK) return RNG_BAD_OUTBUF;
+    if(chunk>sizeof(value)) chunk=sizeof(value);
+    for(unsigned long long i=0;i<chunk;i++) x[generated+i]=(uint8_t)(value>>(8u*i));
+    generated+=chunk;
+  }
+  return RNG_SUCCESS;
+}
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){ if(huart->Instance==USART1){ cmd=rx_buffer; cmd_flag=1; HAL_UART_Receive_IT(&huart1,&rx_buffer,1);} }
 static void enable_cycle_counter(void){ CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; DWT->CYCCNT=0; DWT->CTRL|=DWT_CTRL_CYCCNTENA_Msk; }
