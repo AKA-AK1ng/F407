@@ -65,7 +65,10 @@ static unsigned long cycle_u64_to_printable_ul(uint64_t cycles){ return (cycles>
 static void init_cycle_stat(cycle_stat_t *s){ s->total=0; s->min=0xFFFFFFFFu; s->max=0; s->count=0; }
 static void add_cycle_sample(cycle_stat_t *s,uint32_t c){ s->total+=c; if(c<s->min)s->min=c; if(c>s->max)s->max=c; s->count++; }
 static uint64_t average_cycle_stat(const cycle_stat_t *s){ return (s->count==0u)?0ULL:(s->total/s->count); }
-static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round){ for(uint32_t i=0;i<len;i++) buf[i]=(uint8_t)((round*DERAND_ROUND_MULTIPLIER)+(i*DERAND_INDEX_MULTIPLIER)+(round>>3)); }
+static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round){
+  /* Reproducible non-crypto pattern for benchmark reconstruction paths. */
+  for(uint32_t i=0;i<len;i++) buf[i]=(uint8_t)((round*DERAND_ROUND_MULTIPLIER)+(i*DERAND_INDEX_MULTIPLIER)+(round>>3));
+}
 static void print_breakdown_row(const char *name,const cycle_stat_t *stat,uint64_t total_avg){ uint64_t avg=average_cycle_stat(stat); uint64_t pct=(total_avg==0ULL)?0ULL:((avg*10000ULL)/total_avg); printf("%-24s | %-14lu | %3lu.%02lu\r\n",name,cycle_u64_to_printable_ul(avg),cycle_u64_to_printable_ul(pct/100ULL),cycle_u64_to_printable_ul(pct%100ULL)); }
 static void print_round_progress(const char *stage,uint32_t done,uint32_t total,uint32_t *next){ if((done>=*next)||(done==total)){ printf("[PROGRESS][%s] round %lu/%lu\r\n",stage,(unsigned long)done,(unsigned long)total); if(done>=*next) *next += PROGRESS_UPDATE_INTERVAL_ROUNDS; } }
 
@@ -191,12 +194,23 @@ static void run_kem_comparison_benchmark(void){
 }
 
 int main(void){
-  HAL_Init(); SystemClock_Config(); MX_GPIO_Init(); MX_USART1_UART_Init(); MX_RNG_Init(); HAL_UART_Receive_IT(&huart1,&rx_buffer,1);
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_USART1_UART_Init();
+  MX_RNG_Init();
+  HAL_UART_Receive_IT(&huart1,&rx_buffer,1);
   printf("=========================\r\n  SABER TEST SYSTEM READY\r\n=========================\r\n");
   printf("TEST ROUNDS: %lu\r\n",(unsigned long)BENCH_ROUNDS);
   printf("CMD: C=RUN SABER COMPREHENSIVE REPORT (%lu rounds)\r\n",(unsigned long)BENCH_ROUNDS);
   printf("BUILD MODE: SABER-ONLY BENCHMARK\r\n=========================\r\n");
-  while(1){ if(cmd_flag==1){ cmd_flag=0; if(cmd=='C'||cmd=='c') run_kem_comparison_benchmark(); else printf("ONLY CMD 'C' IS ENABLED\r\n\r\n"); } }
+  while(1){
+    if(cmd_flag==1){
+      cmd_flag=0;
+      if(cmd=='C'||cmd=='c') run_kem_comparison_benchmark();
+      else printf("ONLY CMD 'C' IS ENABLED\r\n\r\n");
+    }
+  }
 }
 
 void SystemClock_Config(void){

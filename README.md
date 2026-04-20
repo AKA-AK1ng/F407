@@ -23,7 +23,7 @@
 
 当前固件为 **Saber-only benchmark**，串口输入命令 `C` 后执行 Saber 基准，并保留 CPA-PKE Breakdown：
 
-1. 运行 1000 轮 Saber `KeyGen/Encaps/Decaps`；
+1. 运行 `BENCH_ROUNDS`（默认 1000）轮 Saber `KeyGen/Encaps/Decaps`；
 2. 输出 CPA-PKE `KeyGen/Encrypt/Decrypt` 分阶段 cycles；
 3. 输出 KEM mismatch 计数（共享密钥不一致次数）。
 
