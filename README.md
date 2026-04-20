@@ -21,11 +21,11 @@
 
 ## 当前测试逻辑
 
-当前固件为 **Kyber-only benchmark**，串口输入命令 `C` 后执行 Kyber512 基准：
+当前固件为 **Saber-only benchmark**，串口输入命令 `C` 后执行 Saber 基准，并保留 CPA-PKE Breakdown：
 
-1. 运行 1000 轮 Kyber512 `KeyGen/Encaps/Decaps`；
-2. 统计平均 cycles；
-3. 输出 mismatch 计数（共享密钥不一致次数）。
+1. 运行 1000 轮 Saber `KeyGen/Encaps/Decaps`；
+2. 输出 CPA-PKE `KeyGen/Encrypt/Decrypt` 分阶段 cycles；
+3. 输出 KEM mismatch 计数（共享密钥不一致次数）。
 
 ---
 
@@ -93,13 +93,13 @@ KEM shared-secret mismatch count: 0
 
 ---
 
-## Kyber512 粗粒度 cycles 基准
+## Saber 粗粒度 cycles 基准
 
-`Src/main.c` 已新增串口命令 `C`，用于输出统一表格：
+`Src/main.c` 使用串口命令 `C` 输出综合报告：
 
 `Scheme | KeyGen | Encaps | Decaps | Mismatch`
 
 ### 说明
 
-- `C` 命令当前仅测 Kyber512；
+- `C` 命令当前仅测 Saber；
 - 测量统一使用 `DWT->CYCCNT`，轮次为 `MLWQ_BENCH_ROUNDS`（1000）。

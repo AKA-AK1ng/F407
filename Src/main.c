@@ -1,985 +1,203 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "rng.h"
 #include "rtc.h"
 #include "usart.h"
 #include "gpio.h"
-
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
 #include "stdio.h"
 #include "string.h"
-#include "../kyber_ref/api.h"
-#include "../kyber_ref/params.h"
-#include "../kyber_ref/indcpa.h"
-#include "../kyber_ref/polyvec.h"
-#include "../kyber_ref/poly.h"
-#include "../kyber_ref/symmetric.h"
-#include "../kyber_ref/randombytes.h"
-/* USER CODE END Includes */
+#include "../saber_ref/api.h"
+#include "../saber_ref/SABER_params.h"
+#include "../saber_ref/SABER_indcpa.h"
+#include "../saber_ref/poly.h"
+#include "../saber_ref/pack_unpack.h"
+#include "../saber_ref/fips202.h"
+#include "../saber_ref/rng.h"
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
+typedef struct { const char *name; uint64_t keygen_cycles, encaps_cycles, decaps_cycles; uint32_t keygen_success_count, encaps_success_count, decaps_success_count, error_count, mismatch_count; } kem_summary_t;
+typedef struct { uint64_t total; uint32_t min, max, count; } cycle_stat_t;
+typedef struct { cycle_stat_t keypair_total,keypair_rebuild_total,rng_seed_a,seed_a_hash,rng_seed_s,gen_matrix,sample,matvec,quantize,pack; } saber_keygen_breakdown_t;
+typedef struct { cycle_stat_t indcpa_total,unpack,gen_matrix,sample,matvec,quantize_u,pack_u,unpack_pk,innerprod,decode_msg,quantize_v,pack_v,rebuild_total; } saber_encrypt_breakdown_t;
+typedef struct { cycle_stat_t indcpa_total,unpack,innerprod,unpack_scale,recover,encode_msg,rebuild_total; } saber_decrypt_breakdown_t;
 
-typedef struct {
-  const char *name;
-  uint64_t keygen_cycles;
-  uint64_t encaps_cycles;
-  uint64_t decaps_cycles;
-  uint32_t keygen_success_count;
-  uint32_t encaps_success_count;
-  uint32_t decaps_success_count;
-  uint32_t error_count;
-  uint32_t mismatch_count;
-} kem_summary_t;
-
-typedef struct {
-  uint64_t total;
-  uint32_t min;
-  uint32_t max;
-  uint32_t count;
-} cycle_stat_t;
-
-typedef struct {
-  cycle_stat_t keypair_total;
-  cycle_stat_t keypair_derand_total;
-  cycle_stat_t rng;
-  cycle_stat_t indcpa_total;
-  cycle_stat_t kem_tail;
-  cycle_stat_t seed_expand;
-  cycle_stat_t gen_matrix;
-  cycle_stat_t sample;
-  cycle_stat_t ntt;
-  cycle_stat_t arith_as;
-  cycle_stat_t arith_tomont;
-  cycle_stat_t arith_add_e;
-  cycle_stat_t arith_reduce;
-  cycle_stat_t pack;
-  cycle_stat_t indcpa_rebuild_total;
-} kyber_keygen_breakdown_t;
-
-typedef struct {
-  cycle_stat_t indcpa_total;
-  cycle_stat_t unpack_msg;
-  cycle_stat_t gen_at;
-  cycle_stat_t sample;
-  cycle_stat_t ntt;
-  cycle_stat_t arith_u;
-  cycle_stat_t arith_v;
-  cycle_stat_t invntt;
-  cycle_stat_t arith_add;
-  cycle_stat_t arith_reduce;
-  cycle_stat_t pack;
-  cycle_stat_t indcpa_rebuild_total;
-} kyber_encrypt_breakdown_t;
-
-typedef struct {
-  cycle_stat_t indcpa_total;
-  cycle_stat_t unpack;
-  cycle_stat_t ntt;
-  cycle_stat_t arith_su;
-  cycle_stat_t arith_invntt;
-  cycle_stat_t arith_sub;
-  cycle_stat_t arith_reduce;
-  cycle_stat_t decode;
-  cycle_stat_t indcpa_rebuild_total;
-} kyber_decrypt_breakdown_t;
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
-/* Default benchmark rounds for stable UART-reported averages on this target. */
 #define BENCH_ROUNDS 1000u
-#define KYBER_DEC_SUCCESS 0
 #define KEM_SCHEME_COL_WIDTH 12
 #define KEM_CYCLES_COL_WIDTH 12
 #define KEM_MISMATCH_COL_WIDTH 8
 #define PROGRESS_UPDATE_INTERVAL_ROUNDS 100u
-/* Simple coprime multipliers for deterministic, non-constant per-round/per-index byte patterns. */
 #define DERAND_ROUND_MULTIPLIER 17u
 #define DERAND_INDEX_MULTIPLIER 31u
-/* USER CODE END PM */
+#define SABER_H1 (1u << (SABER_EQ - SABER_EP - 1))
+#define SABER_H2 ((1u << (SABER_EP - 2)) - (1u << (SABER_EP - SABER_ET - 1)) + (1u << (SABER_EQ - SABER_EP - 1)))
 
-/* Private variables ---------------------------------------------------------*/
+uint8_t rx_buffer; uint8_t cmd_flag = 0; char cmd; extern RNG_HandleTypeDef hrng;
 
-/* USER CODE BEGIN PV */
-uint8_t rx_buffer;
-uint8_t cmd_flag = 0;
-char cmd;
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-/* USER CODE BEGIN PFP */
 static void run_kem_comparison_benchmark(void);
 static void enable_cycle_counter(void);
-static void run_kyber_benchmark(uint32_t rounds,
-                                uint64_t *keygen_total,
-                                uint64_t *encaps_total,
-                                uint64_t *decaps_total,
-                                uint32_t *keygen_success_count,
-                                uint32_t *encaps_success_count,
-                                uint32_t *decaps_success_count,
-                                uint32_t *error_count,
-                                uint32_t *mismatch_count);
-static void print_report_separator(void);
-static void print_kyber_data_sizes(void);
-static uint64_t safe_average(uint64_t total_cycles, uint32_t count);
+static void run_saber_benchmark(uint32_t rounds,uint64_t *keygen_total,uint64_t *encaps_total,uint64_t *decaps_total,uint32_t *keygen_success_count,uint32_t *encaps_success_count,uint32_t *decaps_success_count,uint32_t *error_count,uint32_t *mismatch_count);
+static void print_saber_data_sizes(void);
 static void print_kem_summary_row(const kem_summary_t *summary);
-static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
-                                                 kyber_keygen_breakdown_t *breakdown,
-                                                 uint32_t *error_count);
-static void run_kyber_encrypt_breakdown_benchmark(uint32_t rounds,
-                                                  kyber_encrypt_breakdown_t *breakdown,
-                                                  uint32_t *error_count);
-static void run_kyber_decrypt_breakdown_benchmark(uint32_t rounds,
-                                                  kyber_decrypt_breakdown_t *breakdown,
-                                                  uint32_t *error_count);
-static void init_cycle_stat(cycle_stat_t *stat);
-static void add_cycle_sample(cycle_stat_t *stat, uint32_t cycles);
-static uint64_t average_cycle_stat(const cycle_stat_t *stat);
-static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round);
-static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint64_t total_avg);
-static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown);
-static void print_encrypt_breakdown(const kyber_encrypt_breakdown_t *breakdown);
-static void print_decrypt_breakdown(const kyber_decrypt_breakdown_t *breakdown);
-static void print_round_progress(const char *stage, uint32_t completed_rounds, uint32_t total_rounds, uint32_t *next_progress_round);
-/* USER CODE END PFP */
+static void run_saber_keygen_breakdown_benchmark(uint32_t rounds,saber_keygen_breakdown_t *breakdown,uint32_t *error_count);
+static void run_saber_encrypt_breakdown_benchmark(uint32_t rounds,saber_encrypt_breakdown_t *breakdown,uint32_t *error_count);
+static void run_saber_decrypt_breakdown_benchmark(uint32_t rounds,saber_decrypt_breakdown_t *breakdown,uint32_t *error_count);
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-int __io_putchar(int ch)
-{
-  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, 100);
-  return ch;
+int __io_putchar(int ch){ HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, 100); return ch; }
+int fputc(int ch, FILE *f){ (void)f; return __io_putchar(ch); }
+int randombytes(unsigned char *x, unsigned long long xlen){ unsigned long long generated=0ULL; while(generated<xlen){ uint32_t value; unsigned long long chunk=xlen-generated; if(HAL_RNG_GenerateRandomNumber(&hrng,&value)!=HAL_OK) return RNG_BAD_OUTBUF; if(chunk>sizeof(value)) chunk=sizeof(value); for(unsigned long long i=0;i<chunk;i++) x[generated+i]=(uint8_t)(value>>(8u*i)); generated+=chunk;} return RNG_SUCCESS; }
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){ if(huart->Instance==USART1){ cmd=rx_buffer; cmd_flag=1; HAL_UART_Receive_IT(&huart1,&rx_buffer,1);} }
+static void enable_cycle_counter(void){ CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; DWT->CYCCNT=0; DWT->CTRL|=DWT_CTRL_CYCCNTENA_Msk; }
+static void print_report_separator(void){ printf("%s", PROFILE_SEPARATOR); }
+static uint64_t safe_average(uint64_t total_cycles, uint32_t count){ return (count==0u)?0ULL:(total_cycles/count); }
+static unsigned long cycle_u64_to_printable_ul(uint64_t cycles){ return (cycles>0xFFFFFFFFULL)?0xFFFFFFFFUL:(unsigned long)cycles; }
+static void init_cycle_stat(cycle_stat_t *s){ s->total=0; s->min=0xFFFFFFFFu; s->max=0; s->count=0; }
+static void add_cycle_sample(cycle_stat_t *s,uint32_t c){ s->total+=c; if(c<s->min)s->min=c; if(c>s->max)s->max=c; s->count++; }
+static uint64_t average_cycle_stat(const cycle_stat_t *s){ return (s->count==0u)?0ULL:(s->total/s->count); }
+static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round){ for(uint32_t i=0;i<len;i++) buf[i]=(uint8_t)((round*DERAND_ROUND_MULTIPLIER)+(i*DERAND_INDEX_MULTIPLIER)+(round>>3)); }
+static void print_breakdown_row(const char *name,const cycle_stat_t *stat,uint64_t total_avg){ uint64_t avg=average_cycle_stat(stat); uint64_t pct=(total_avg==0ULL)?0ULL:((avg*10000ULL)/total_avg); printf("%-24s | %-14lu | %3lu.%02lu\r\n",name,cycle_u64_to_printable_ul(avg),cycle_u64_to_printable_ul(pct/100ULL),cycle_u64_to_printable_ul(pct%100ULL)); }
+static void print_round_progress(const char *stage,uint32_t done,uint32_t total,uint32_t *next){ if((done>=*next)||(done==total)){ printf("[PROGRESS][%s] round %lu/%lu\r\n",stage,(unsigned long)done,(unsigned long)total); if(done>=*next) *next += PROGRESS_UPDATE_INTERVAL_ROUNDS; } }
+
+static void print_saber_data_sizes(void){
+  printf(">>> PART 0: Protocol Data Sizes (Serialized/Wire Format)\r\n"); print_report_separator(); printf("%-35s %-15s\r\n","Component","Size (Bytes)"); print_report_separator();
+  printf("[Saber] Public Key (pk):\r\n  %-33s %lu\r\n","CRYPTO_PUBLICKEYBYTES",(unsigned long)CRYPTO_PUBLICKEYBYTES);
+  printf("[Saber] Secret Key (sk):\r\n  %-33s %lu\r\n","CRYPTO_SECRETKEYBYTES",(unsigned long)CRYPTO_SECRETKEYBYTES);
+  printf("[Saber] Ciphertext (ct):\r\n  %-33s %lu\r\n","CRYPTO_CIPHERTEXTBYTES",(unsigned long)CRYPTO_CIPHERTEXTBYTES);
+  printf("[Saber] Shared Secret (ss):\r\n  %-33s %lu\r\n","CRYPTO_BYTES",(unsigned long)CRYPTO_BYTES);
+  print_report_separator(); printf("\r\n");
 }
 
-int fputc(int ch, FILE *f)
-{
-  /* UART stdout only: FILE parameter unused in embedded UART implementation. */
-  (void)f;
-  return __io_putchar(ch);
+static void print_kem_summary_row(const kem_summary_t *summary){
+  printf("%-*s | %*lu | %*lu | %*lu | %*lu\r\n",KEM_SCHEME_COL_WIDTH,summary->name,KEM_CYCLES_COL_WIDTH,cycle_u64_to_printable_ul(safe_average(summary->keygen_cycles,summary->keygen_success_count)),KEM_CYCLES_COL_WIDTH,cycle_u64_to_printable_ul(safe_average(summary->encaps_cycles,summary->encaps_success_count)),KEM_CYCLES_COL_WIDTH,cycle_u64_to_printable_ul(safe_average(summary->decaps_cycles,summary->decaps_success_count)),KEM_MISMATCH_COL_WIDTH,(unsigned long)summary->mismatch_count);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if(huart->Instance == USART1)
-  {
-    cmd = rx_buffer;
-    cmd_flag = 1;
-    HAL_UART_Receive_IT(&huart1, &rx_buffer, 1);
+static void saber_keypair_from_seeds(uint8_t pk[SABER_INDCPA_PUBLICKEYBYTES],uint8_t sk[SABER_INDCPA_SECRETKEYBYTES],const uint8_t seed_a_in[SABER_SEEDBYTES],const uint8_t seed_s[SABER_NOISE_SEEDBYTES]){
+  uint16_t A[SABER_L][SABER_L][SABER_N]; uint16_t s[SABER_L][SABER_N]; uint16_t b[SABER_L][SABER_N]={0}; uint8_t seed_a[SABER_SEEDBYTES];
+  memcpy(seed_a,seed_a_in,SABER_SEEDBYTES); shake128(seed_a,SABER_SEEDBYTES,seed_a,SABER_SEEDBYTES); GenMatrix(A,seed_a); GenSecret(s,seed_s); MatrixVectorMul(A,s,b,1);
+  for(int i=0;i<SABER_L;i++) for(int j=0;j<SABER_N;j++) b[i][j]=(uint16_t)((b[i][j]+SABER_H1)>>(SABER_EQ-SABER_EP));
+  POLVECq2BS(sk,s); POLVECp2BS(pk,b); memcpy(pk+SABER_POLYVECCOMPRESSEDBYTES,seed_a,SABER_SEEDBYTES);
+}
+
+static void run_saber_benchmark(uint32_t rounds,uint64_t *keygen_total,uint64_t *encaps_total,uint64_t *decaps_total,uint32_t *keygen_success_count,uint32_t *encaps_success_count,uint32_t *decaps_success_count,uint32_t *error_count,uint32_t *mismatch_count){
+  static uint8_t pk[CRYPTO_PUBLICKEYBYTES],sk[CRYPTO_SECRETKEYBYTES],ct[CRYPTO_CIPHERTEXTBYTES],ss1[CRYPTO_BYTES],ss2[CRYPTO_BYTES];
+  uint32_t t0,elapsed,next=PROGRESS_UPDATE_INTERVAL_ROUNDS; int ret;
+  *keygen_total=*encaps_total=*decaps_total=0; *keygen_success_count=*encaps_success_count=*decaps_success_count=*error_count=*mismatch_count=0;
+  for(uint32_t round=0; round<rounds; round++){
+    t0=DWT->CYCCNT; ret=crypto_kem_keypair(pk,sk); elapsed=DWT->CYCCNT-t0; if(ret!=0){(*error_count)++; print_round_progress("KEM",round+1u,rounds,&next); continue;} *keygen_total+=elapsed; (*keygen_success_count)++;
+    t0=DWT->CYCCNT; ret=crypto_kem_enc(ct,ss1,pk); elapsed=DWT->CYCCNT-t0; if(ret!=0){(*error_count)++; print_round_progress("KEM",round+1u,rounds,&next); continue;} *encaps_total+=elapsed; (*encaps_success_count)++;
+    t0=DWT->CYCCNT; ret=crypto_kem_dec(ss2,ct,sk); elapsed=DWT->CYCCNT-t0; if(ret!=0){(*error_count)++; print_round_progress("KEM",round+1u,rounds,&next); continue;} *decaps_total+=elapsed; (*decaps_success_count)++;
+    if(memcmp(ss1,ss2,CRYPTO_BYTES)!=0) (*mismatch_count)++; print_round_progress("KEM",round+1u,rounds,&next);
   }
 }
 
-static void enable_cycle_counter(void)
-{
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0;
-  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
-static void run_kyber_benchmark(uint32_t rounds,
-                                uint64_t *keygen_total,
-                                uint64_t *encaps_total,
-                                uint64_t *decaps_total,
-                                uint32_t *keygen_success_count,
-                                uint32_t *encaps_success_count,
-                                uint32_t *decaps_success_count,
-                                uint32_t *error_count,
-                                uint32_t *mismatch_count)
-{
-  static uint8_t pk[pqcrystals_kyber512_ref_PUBLICKEYBYTES];
-  static uint8_t sk[pqcrystals_kyber512_ref_SECRETKEYBYTES];
-  static uint8_t ct[pqcrystals_kyber512_ref_CIPHERTEXTBYTES];
-  static uint8_t ss1[pqcrystals_kyber512_ref_BYTES], ss2[pqcrystals_kyber512_ref_BYTES];
-  uint32_t t0;
-  uint32_t elapsed_cycles;
-  int keygen_ret;
-  int enc_ret;
-  int dec_ret;
-  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
-
-  *keygen_total = 0;
-  *encaps_total = 0;
-  *decaps_total = 0;
-  *keygen_success_count = 0;
-  *encaps_success_count = 0;
-  *decaps_success_count = 0;
-  *error_count = 0;
-  *mismatch_count = 0;
-
-  for(uint32_t round = 0; round < rounds; round++)
-  {
-    t0 = DWT->CYCCNT;
-    keygen_ret = pqcrystals_kyber512_ref_keypair(pk, sk);
-    elapsed_cycles = DWT->CYCCNT - t0;
-    if(keygen_ret != 0) {
-      (*error_count)++;
-      print_round_progress("KEM", round + 1u, rounds, &next_progress_round);
-      continue;
-    }
-    *keygen_total += (uint64_t)elapsed_cycles;
-    (*keygen_success_count)++;
-
-    t0 = DWT->CYCCNT;
-    enc_ret = pqcrystals_kyber512_ref_enc(ct, ss1, pk);
-    elapsed_cycles = DWT->CYCCNT - t0;
-    if(enc_ret != 0) {
-      (*error_count)++;
-      print_round_progress("KEM", round + 1u, rounds, &next_progress_round);
-      continue;
-    }
-    *encaps_total += (uint64_t)elapsed_cycles;
-    (*encaps_success_count)++;
-
-    t0 = DWT->CYCCNT;
-    dec_ret = pqcrystals_kyber512_ref_dec(ss2, ct, sk);
-    *decaps_total += (uint64_t)(DWT->CYCCNT - t0);
-    (*decaps_success_count)++;
-
-    if((dec_ret != KYBER_DEC_SUCCESS) || (memcmp(ss1, ss2, pqcrystals_kyber512_ref_BYTES) != 0)) {
-      (*mismatch_count)++;
-    }
-
-    print_round_progress("KEM", round + 1u, rounds, &next_progress_round);
+static void run_saber_keygen_breakdown_benchmark(uint32_t rounds,saber_keygen_breakdown_t *bd,uint32_t *error_count){
+  static uint8_t pk_ref[SABER_INDCPA_PUBLICKEYBYTES],sk_ref[SABER_INDCPA_SECRETKEYBYTES],pk_rb[SABER_INDCPA_PUBLICKEYBYTES],sk_rb[SABER_INDCPA_SECRETKEYBYTES],seed_a[SABER_SEEDBYTES],seed_s[SABER_NOISE_SEEDBYTES];
+  static uint16_t A[SABER_L][SABER_L][SABER_N],s[SABER_L][SABER_N],b[SABER_L][SABER_N]={0}; uint32_t t0,tstart,next=PROGRESS_UPDATE_INTERVAL_ROUNDS;
+  init_cycle_stat(&bd->keypair_total);init_cycle_stat(&bd->keypair_rebuild_total);init_cycle_stat(&bd->rng_seed_a);init_cycle_stat(&bd->seed_a_hash);init_cycle_stat(&bd->rng_seed_s);init_cycle_stat(&bd->gen_matrix);init_cycle_stat(&bd->sample);init_cycle_stat(&bd->matvec);init_cycle_stat(&bd->quantize);init_cycle_stat(&bd->pack); *error_count=0;
+  for(uint32_t round=0; round<rounds; round++){
+    t0=DWT->CYCCNT; indcpa_kem_keypair(pk_ref,sk_ref); add_cycle_sample(&bd->keypair_total,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; fill_deterministic_bytes(seed_a,SABER_SEEDBYTES,round); add_cycle_sample(&bd->rng_seed_a,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; shake128(seed_a,SABER_SEEDBYTES,seed_a,SABER_SEEDBYTES); add_cycle_sample(&bd->seed_a_hash,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; fill_deterministic_bytes(seed_s,SABER_NOISE_SEEDBYTES,round+1u); add_cycle_sample(&bd->rng_seed_s,DWT->CYCCNT-t0);
+    tstart=DWT->CYCCNT;
+    t0=DWT->CYCCNT; GenMatrix(A,seed_a); add_cycle_sample(&bd->gen_matrix,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; GenSecret(s,seed_s); add_cycle_sample(&bd->sample,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; MatrixVectorMul(A,s,b,1); add_cycle_sample(&bd->matvec,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; for(int i=0;i<SABER_L;i++) for(int j=0;j<SABER_N;j++) b[i][j]=(uint16_t)((b[i][j]+SABER_H1)>>(SABER_EQ-SABER_EP)); add_cycle_sample(&bd->quantize,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; POLVECq2BS(sk_rb,s); POLVECp2BS(pk_rb,b); memcpy(pk_rb+SABER_POLYVECCOMPRESSEDBYTES,seed_a,SABER_SEEDBYTES); add_cycle_sample(&bd->pack,DWT->CYCCNT-t0);
+    add_cycle_sample(&bd->keypair_rebuild_total,DWT->CYCCNT-tstart);
+    saber_keypair_from_seeds(pk_ref,sk_ref,seed_a,seed_s);
+    if((memcmp(pk_ref,pk_rb,SABER_INDCPA_PUBLICKEYBYTES)!=0)||(memcmp(sk_ref,sk_rb,SABER_INDCPA_SECRETKEYBYTES)!=0)) (*error_count)++;
+    print_round_progress("KEYGEN_BREAKDOWN",round+1u,rounds,&next);
   }
 }
 
-static void print_report_separator(void)
-{
-  printf("%s", PROFILE_SEPARATOR);
-}
-
-static void print_kyber_data_sizes(void)
-{
-  printf(">>> PART 0: Protocol Data Sizes (Serialized/Wire Format)\r\n");
-  print_report_separator();
-  printf("%-35s %-15s\r\n", "Component", "Size (Bytes)");
-  print_report_separator();
-
-  printf("[Kyber512] Public Key (pk):\r\n");
-  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_PUBLICKEYBYTES", (unsigned long)pqcrystals_kyber512_ref_PUBLICKEYBYTES);
-
-  printf("[Kyber512] Secret Key (sk):\r\n");
-  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_SECRETKEYBYTES", (unsigned long)pqcrystals_kyber512_ref_SECRETKEYBYTES);
-
-  printf("[Kyber512] Ciphertext (ct):\r\n");
-  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_CIPHERTEXTBYTES", (unsigned long)pqcrystals_kyber512_ref_CIPHERTEXTBYTES);
-
-  printf("[Kyber512] Shared Secret (ss):\r\n");
-  printf("  %-33s %lu\r\n", "pqcrystals_kyber512_ref_BYTES", (unsigned long)pqcrystals_kyber512_ref_BYTES);
-
-  print_report_separator();
-  printf("\r\n");
-}
-
-static uint64_t safe_average(uint64_t total_cycles, uint32_t count)
-{
-  if(count == 0u) {
-    return 0ULL;
-  }
-  return total_cycles / count;
-}
-
-static unsigned long cycle_u64_to_printable_ul(uint64_t cycles)
-{
-  /* newlib-nano on target may not support %llu in printf; cap to 32-bit for stable UART reporting. */
-  if(cycles > 0xFFFFFFFFULL) {
-    return 0xFFFFFFFFUL;
-  }
-  return (unsigned long)cycles;
-}
-
-static void print_kem_summary_row(const kem_summary_t *summary)
-{
-  printf("%-*s | %*lu | %*lu | %*lu | %*lu\r\n",
-         KEM_SCHEME_COL_WIDTH,
-         summary->name,
-         KEM_CYCLES_COL_WIDTH,
-         cycle_u64_to_printable_ul(safe_average(summary->keygen_cycles, summary->keygen_success_count)),
-         KEM_CYCLES_COL_WIDTH,
-         cycle_u64_to_printable_ul(safe_average(summary->encaps_cycles, summary->encaps_success_count)),
-         KEM_CYCLES_COL_WIDTH,
-         cycle_u64_to_printable_ul(safe_average(summary->decaps_cycles, summary->decaps_success_count)),
-         KEM_MISMATCH_COL_WIDTH,
-         (unsigned long)summary->mismatch_count);
-}
-
-static void init_cycle_stat(cycle_stat_t *stat)
-{
-  stat->total = 0ULL;
-  stat->min = 0xFFFFFFFFu;
-  stat->max = 0u;
-  stat->count = 0u;
-}
-
-static void add_cycle_sample(cycle_stat_t *stat, uint32_t cycles)
-{
-  stat->total += (uint64_t)cycles;
-  if(cycles < stat->min) {
-    stat->min = cycles;
-  }
-  if(cycles > stat->max) {
-    stat->max = cycles;
-  }
-  stat->count++;
-}
-
-static uint64_t average_cycle_stat(const cycle_stat_t *stat)
-{
-  if(stat->count == 0u) {
-    return 0ULL;
-  }
-  return stat->total / stat->count;
-}
-
-static void fill_deterministic_bytes(uint8_t *buf, uint32_t len, uint32_t round)
-{
-  for(uint32_t i = 0; i < len; i++) {
-    /* Mix round and index so derand input is repeatable but not trivially constant across rounds. */
-    buf[i] = (uint8_t)((round * DERAND_ROUND_MULTIPLIER) + (i * DERAND_INDEX_MULTIPLIER) + (round >> 3));
+static void run_saber_encrypt_breakdown_benchmark(uint32_t rounds,saber_encrypt_breakdown_t *bd,uint32_t *error_count){
+  static uint8_t pk[SABER_INDCPA_PUBLICKEYBYTES],sk[SABER_INDCPA_SECRETKEYBYTES],ct_ref[SABER_BYTES_CCA_DEC],ct_rb[SABER_BYTES_CCA_DEC],m[SABER_KEYBYTES],seed_sp[SABER_NOISE_SEEDBYTES],seed_a[SABER_SEEDBYTES];
+  static uint16_t A[SABER_L][SABER_L][SABER_N],sp[SABER_L][SABER_N],bp[SABER_L][SABER_N]={0},vp[SABER_N]={0},mp[SABER_N],b[SABER_L][SABER_N]; uint32_t t0,tstart,next=PROGRESS_UPDATE_INTERVAL_ROUNDS;
+  init_cycle_stat(&bd->indcpa_total);init_cycle_stat(&bd->unpack);init_cycle_stat(&bd->gen_matrix);init_cycle_stat(&bd->sample);init_cycle_stat(&bd->matvec);init_cycle_stat(&bd->quantize_u);init_cycle_stat(&bd->pack_u);init_cycle_stat(&bd->unpack_pk);init_cycle_stat(&bd->innerprod);init_cycle_stat(&bd->decode_msg);init_cycle_stat(&bd->quantize_v);init_cycle_stat(&bd->pack_v);init_cycle_stat(&bd->rebuild_total);*error_count=0;
+  for(uint32_t round=0; round<rounds; round++){
+    fill_deterministic_bytes(seed_a,SABER_SEEDBYTES,round); fill_deterministic_bytes(seed_sp,SABER_NOISE_SEEDBYTES,round+1u); fill_deterministic_bytes(m,SABER_KEYBYTES,round+2u); saber_keypair_from_seeds(pk,sk,seed_a,seed_sp); fill_deterministic_bytes(seed_sp,SABER_NOISE_SEEDBYTES,round+3u);
+    t0=DWT->CYCCNT; indcpa_kem_enc(m,seed_sp,pk,ct_ref); add_cycle_sample(&bd->indcpa_total,DWT->CYCCNT-t0);
+    tstart=DWT->CYCCNT;
+    t0=DWT->CYCCNT; memcpy(seed_a,pk+SABER_POLYVECCOMPRESSEDBYTES,SABER_SEEDBYTES); add_cycle_sample(&bd->unpack,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; GenMatrix(A,seed_a); add_cycle_sample(&bd->gen_matrix,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; GenSecret(sp,seed_sp); add_cycle_sample(&bd->sample,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; MatrixVectorMul(A,sp,bp,0); add_cycle_sample(&bd->matvec,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; for(int i=0;i<SABER_L;i++) for(int j=0;j<SABER_N;j++) bp[i][j]=(uint16_t)((bp[i][j]+SABER_H1)>>(SABER_EQ-SABER_EP)); add_cycle_sample(&bd->quantize_u,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; POLVECp2BS(ct_rb,bp); add_cycle_sample(&bd->pack_u,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; BS2POLVECp(pk,b); add_cycle_sample(&bd->unpack_pk,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; InnerProd(b,sp,vp); add_cycle_sample(&bd->innerprod,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; BS2POLmsg(m,mp); add_cycle_sample(&bd->decode_msg,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; for(int j=0;j<SABER_N;j++) vp[j]=(uint16_t)((vp[j]-(mp[j]<<(SABER_EP-1))+SABER_H1)>>(SABER_EP-SABER_ET)); add_cycle_sample(&bd->quantize_v,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; POLT2BS(ct_rb+SABER_POLYVECCOMPRESSEDBYTES,vp); add_cycle_sample(&bd->pack_v,DWT->CYCCNT-t0);
+    add_cycle_sample(&bd->rebuild_total,DWT->CYCCNT-tstart);
+    if(memcmp(ct_ref,ct_rb,SABER_BYTES_CCA_DEC)!=0) (*error_count)++;
+    print_round_progress("ENC_BREAKDOWN",round+1u,rounds,&next);
   }
 }
 
-static void print_breakdown_row(const char *name, const cycle_stat_t *stat, uint64_t total_avg)
-{
-  uint64_t avg = average_cycle_stat(stat);
-  uint64_t pct_x100 = (total_avg == 0ULL) ? 0ULL : ((avg * 10000ULL) / total_avg);
-  printf("%-24s | %-14lu | %3lu.%02lu\r\n",
-         name,
-         cycle_u64_to_printable_ul(avg),
-         cycle_u64_to_printable_ul(pct_x100 / 100ULL),
-         cycle_u64_to_printable_ul(pct_x100 % 100ULL));
-}
-
-static void print_round_progress(const char *stage, uint32_t completed_rounds, uint32_t total_rounds, uint32_t *next_progress_round)
-{
-  if((completed_rounds >= *next_progress_round) || (completed_rounds == total_rounds)) {
-    printf("[PROGRESS][%s] round %lu/%lu\r\n",
-           stage,
-           (unsigned long)completed_rounds,
-           (unsigned long)total_rounds);
-    if(completed_rounds >= *next_progress_round) {
-      *next_progress_round += PROGRESS_UPDATE_INTERVAL_ROUNDS;
-    }
+static void run_saber_decrypt_breakdown_benchmark(uint32_t rounds,saber_decrypt_breakdown_t *bd,uint32_t *error_count){
+  static uint8_t pk[SABER_INDCPA_PUBLICKEYBYTES],sk[SABER_INDCPA_SECRETKEYBYTES],ct[SABER_BYTES_CCA_DEC],m_ref[SABER_KEYBYTES],m_rb[SABER_KEYBYTES],seed_a[SABER_SEEDBYTES],seed_s[SABER_NOISE_SEEDBYTES],seed_sp[SABER_NOISE_SEEDBYTES];
+  static uint16_t s[SABER_L][SABER_N],b[SABER_L][SABER_N],v[SABER_N]={0},cm[SABER_N]; uint32_t t0,tstart,next=PROGRESS_UPDATE_INTERVAL_ROUNDS;
+  init_cycle_stat(&bd->indcpa_total);init_cycle_stat(&bd->unpack);init_cycle_stat(&bd->innerprod);init_cycle_stat(&bd->unpack_scale);init_cycle_stat(&bd->recover);init_cycle_stat(&bd->encode_msg);init_cycle_stat(&bd->rebuild_total);*error_count=0;
+  for(uint32_t round=0; round<rounds; round++){
+    fill_deterministic_bytes(seed_a,SABER_SEEDBYTES,round); fill_deterministic_bytes(seed_s,SABER_NOISE_SEEDBYTES,round+1u); fill_deterministic_bytes(seed_sp,SABER_NOISE_SEEDBYTES,round+2u); fill_deterministic_bytes(m_ref,SABER_KEYBYTES,round+3u);
+    saber_keypair_from_seeds(pk,sk,seed_a,seed_s); indcpa_kem_enc(m_ref,seed_sp,pk,ct);
+    t0=DWT->CYCCNT; indcpa_kem_dec(sk,ct,m_ref); add_cycle_sample(&bd->indcpa_total,DWT->CYCCNT-t0);
+    tstart=DWT->CYCCNT;
+    t0=DWT->CYCCNT; BS2POLVECq(sk,s); BS2POLVECp(ct,b); add_cycle_sample(&bd->unpack,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; InnerProd(b,s,v); add_cycle_sample(&bd->innerprod,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; BS2POLT(ct+SABER_POLYVECCOMPRESSEDBYTES,cm); add_cycle_sample(&bd->unpack_scale,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; for(int i=0;i<SABER_N;i++) v[i]=(uint16_t)((v[i]+SABER_H2-(cm[i]<<(SABER_EP-SABER_ET)))>>(SABER_EP-1)); add_cycle_sample(&bd->recover,DWT->CYCCNT-t0);
+    t0=DWT->CYCCNT; POLmsg2BS(m_rb,v); add_cycle_sample(&bd->encode_msg,DWT->CYCCNT-t0);
+    add_cycle_sample(&bd->rebuild_total,DWT->CYCCNT-tstart);
+    if(memcmp(m_ref,m_rb,SABER_KEYBYTES)!=0) (*error_count)++;
+    print_round_progress("DEC_BREAKDOWN",round+1u,rounds,&next);
   }
 }
 
-static void run_kyber_keygen_breakdown_benchmark(uint32_t rounds,
-                                                 kyber_keygen_breakdown_t *breakdown,
-                                                 uint32_t *error_count)
-{
-  static uint8_t pk[pqcrystals_kyber512_ref_PUBLICKEYBYTES];
-  static uint8_t sk[pqcrystals_kyber512_ref_SECRETKEYBYTES];
-  static uint8_t coins64[2 * KYBER_SYMBYTES];
-  static uint8_t coins32[KYBER_SYMBYTES];
-  static uint8_t buf[2 * KYBER_SYMBYTES];
-  static polyvec a[KYBER_K];
-  static polyvec e;
-  static polyvec pkpv;
-  static polyvec skpv;
-  const uint8_t *publicseed = buf;
-  const uint8_t *noiseseed = buf + KYBER_SYMBYTES;
-  uint8_t nonce;
-  uint32_t t0;
-  uint32_t tstart;
-  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
+static void print_keygen_breakdown(const saber_keygen_breakdown_t *bd){ uint64_t total=average_cycle_stat(&bd->keypair_rebuild_total),base=average_cycle_stat(&bd->keypair_total); printf(">>> PART 1: Saber CPA-PKE KeyGen Breakdown (Cycles)\r\n"); print_report_separator(); printf("Baseline indcpa_kem_keypair avg=%lu, min=%lu, max=%lu\r\n",cycle_u64_to_printable_ul(base),(unsigned long)bd->keypair_total.min,(unsigned long)bd->keypair_total.max); printf("Rebuild total avg=%lu, min=%lu, max=%lu\r\n",cycle_u64_to_printable_ul(total),(unsigned long)bd->keypair_rebuild_total.min,(unsigned long)bd->keypair_rebuild_total.max); print_report_separator(); printf("%-24s | %-14s | %-12s\r\n","Stage","Avg Cycles","Share(%)"); print_report_separator(); print_breakdown_row("seed_A(gen)",&bd->rng_seed_a,total); print_breakdown_row("seed_A(hash)",&bd->seed_a_hash,total); print_breakdown_row("seed_s(gen)",&bd->rng_seed_s,total); print_breakdown_row("gen_matrix(A)",&bd->gen_matrix,total); print_breakdown_row("sample(s)",&bd->sample,total); print_breakdown_row("Arith (A*s)",&bd->matvec,total); print_breakdown_row("quantize(b)",&bd->quantize,total); print_breakdown_row("pack(pk,sk)",&bd->pack,total); print_breakdown_row("rebuild_total",&bd->keypair_rebuild_total,total); print_report_separator(); printf("\r\n"); }
+static void print_encrypt_breakdown(const saber_encrypt_breakdown_t *bd){ uint64_t ind=average_cycle_stat(&bd->indcpa_total),reb=average_cycle_stat(&bd->rebuild_total); printf(">>> PART 2: Saber CPA-PKE Encrypt Breakdown (Cycles)\r\n"); print_report_separator(); printf("%-24s | %-14s | %-12s\r\n","Stage","Avg Cycles","Share(%)"); print_report_separator(); print_breakdown_row("unpack(seed_A)",&bd->unpack,reb); print_breakdown_row("gen_matrix(A)",&bd->gen_matrix,reb); print_breakdown_row("sample(sp)",&bd->sample,reb); print_breakdown_row("Arith (A*sp)",&bd->matvec,reb); print_breakdown_row("quantize(u)",&bd->quantize_u,reb); print_breakdown_row("pack(u)",&bd->pack_u,reb); print_breakdown_row("unpack(pk)",&bd->unpack_pk,reb); print_breakdown_row("Arith (b*sp)",&bd->innerprod,reb); print_breakdown_row("decode(msg)",&bd->decode_msg,reb); print_breakdown_row("quantize(v)",&bd->quantize_v,reb); print_breakdown_row("pack(v)",&bd->pack_v,reb); print_breakdown_row("rebuild_total",&bd->rebuild_total,reb); print_report_separator(); printf("indcpa_enc avg = %lu, rebuild_total avg = %lu\r\n\r\n",cycle_u64_to_printable_ul(ind),cycle_u64_to_printable_ul(reb)); }
+static void print_decrypt_breakdown(const saber_decrypt_breakdown_t *bd){ uint64_t ind=average_cycle_stat(&bd->indcpa_total),reb=average_cycle_stat(&bd->rebuild_total); printf(">>> PART 3: Saber CPA-PKE Decrypt Breakdown (Cycles)\r\n"); print_report_separator(); printf("%-24s | %-14s | %-12s\r\n","Stage","Avg Cycles","Share(%)"); print_report_separator(); print_breakdown_row("unpack(ct,sk)",&bd->unpack,reb); print_breakdown_row("Arith (b*s)",&bd->innerprod,reb); print_breakdown_row("unpack(scale)",&bd->unpack_scale,reb); print_breakdown_row("recover(msgpoly)",&bd->recover,reb); print_breakdown_row("encode(msg)",&bd->encode_msg,reb); print_breakdown_row("rebuild_total",&bd->rebuild_total,reb); print_report_separator(); printf("indcpa_dec avg = %lu, rebuild_total avg = %lu\r\n\r\n",cycle_u64_to_printable_ul(ind),cycle_u64_to_printable_ul(reb)); }
 
-  init_cycle_stat(&breakdown->keypair_total);
-  init_cycle_stat(&breakdown->keypair_derand_total);
-  init_cycle_stat(&breakdown->rng);
-  init_cycle_stat(&breakdown->indcpa_total);
-  init_cycle_stat(&breakdown->kem_tail);
-  init_cycle_stat(&breakdown->seed_expand);
-  init_cycle_stat(&breakdown->gen_matrix);
-  init_cycle_stat(&breakdown->sample);
-  init_cycle_stat(&breakdown->ntt);
-  init_cycle_stat(&breakdown->arith_as);
-  init_cycle_stat(&breakdown->arith_tomont);
-  init_cycle_stat(&breakdown->arith_add_e);
-  init_cycle_stat(&breakdown->arith_reduce);
-  init_cycle_stat(&breakdown->pack);
-  init_cycle_stat(&breakdown->indcpa_rebuild_total);
-  *error_count = 0u;
-
-  for(uint32_t round = 0; round < rounds; round++) {
-    t0 = DWT->CYCCNT;
-    if(pqcrystals_kyber512_ref_keypair(pk, sk) != 0) {
-      (*error_count)++;
-      print_round_progress("KEYGEN_BREAKDOWN", round + 1u, rounds, &next_progress_round);
-      continue;
-    }
-    add_cycle_sample(&breakdown->keypair_total, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    randombytes(coins64, 2 * KYBER_SYMBYTES);
-    add_cycle_sample(&breakdown->rng, DWT->CYCCNT - t0);
-
-    fill_deterministic_bytes(coins64, 2 * KYBER_SYMBYTES, round);
-    tstart = DWT->CYCCNT;
-    t0 = DWT->CYCCNT;
-    indcpa_keypair_derand(pk, sk, coins64);
-    add_cycle_sample(&breakdown->indcpa_total, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    memcpy(sk + KYBER_INDCPA_SECRETKEYBYTES, pk, KYBER_PUBLICKEYBYTES);
-    hash_h(sk + KYBER_SECRETKEYBYTES - 2 * KYBER_SYMBYTES, pk, KYBER_PUBLICKEYBYTES);
-    memcpy(sk + KYBER_SECRETKEYBYTES - KYBER_SYMBYTES, coins64 + KYBER_SYMBYTES, KYBER_SYMBYTES);
-    add_cycle_sample(&breakdown->kem_tail, DWT->CYCCNT - t0);
-    add_cycle_sample(&breakdown->keypair_derand_total, DWT->CYCCNT - tstart);
-
-    fill_deterministic_bytes(coins32, KYBER_SYMBYTES, round);
-    tstart = DWT->CYCCNT;
-    memcpy(buf, coins32, KYBER_SYMBYTES);
-    buf[KYBER_SYMBYTES] = KYBER_K;
-
-    t0 = DWT->CYCCNT;
-    hash_g(buf, buf, KYBER_SYMBYTES + 1);
-    add_cycle_sample(&breakdown->seed_expand, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    gen_matrix(a, publicseed, 0);
-    add_cycle_sample(&breakdown->gen_matrix, DWT->CYCCNT - t0);
-
-    nonce = 0;
-    t0 = DWT->CYCCNT;
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      poly_getnoise_eta1(&skpv.vec[i], noiseseed, nonce++);
-    }
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      poly_getnoise_eta1(&e.vec[i], noiseseed, nonce++);
-    }
-    add_cycle_sample(&breakdown->sample, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_ntt(&skpv);
-    polyvec_ntt(&e);
-    add_cycle_sample(&breakdown->ntt, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      polyvec_basemul_acc_montgomery(&pkpv.vec[i], &a[i], &skpv);
-    }
-    add_cycle_sample(&breakdown->arith_as, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      poly_tomont(&pkpv.vec[i]);
-    }
-    add_cycle_sample(&breakdown->arith_tomont, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_add(&pkpv, &pkpv, &e);
-    add_cycle_sample(&breakdown->arith_add_e, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_reduce(&pkpv);
-    add_cycle_sample(&breakdown->arith_reduce, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_tobytes(sk, &skpv);
-    polyvec_tobytes(pk, &pkpv);
-    memcpy(pk + KYBER_POLYVECBYTES, publicseed, KYBER_SYMBYTES);
-    add_cycle_sample(&breakdown->pack, DWT->CYCCNT - t0);
-    add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
-    print_round_progress("KEYGEN_BREAKDOWN", round + 1u, rounds, &next_progress_round);
-  }
-}
-
-static void print_keygen_breakdown(const kyber_keygen_breakdown_t *breakdown)
-{
-  uint64_t derand_avg = average_cycle_stat(&breakdown->keypair_derand_total);
-  uint64_t indcpa_avg = average_cycle_stat(&breakdown->indcpa_total);
-  uint64_t rebuild_avg = average_cycle_stat(&breakdown->indcpa_rebuild_total);
-  uint64_t rng_avg = average_cycle_stat(&breakdown->rng);
-  uint64_t keypair_avg = average_cycle_stat(&breakdown->keypair_total);
-
-  printf(">>> PART 1: Kyber512 KeyGen Breakdown (Cycles)\r\n");
-  print_report_separator();
-  printf("Baseline keypair (api): avg=%lu, min=%lu, max=%lu\r\n",
-         cycle_u64_to_printable_ul(keypair_avg),
-         (unsigned long)breakdown->keypair_total.min,
-         (unsigned long)breakdown->keypair_total.max);
-  printf("RNG(randombytes 64B): avg=%lu\r\n", cycle_u64_to_printable_ul(rng_avg));
-  printf("keypair_derand (reconstructed): avg=%lu, min=%lu, max=%lu\r\n",
-         cycle_u64_to_printable_ul(derand_avg),
-         (unsigned long)breakdown->keypair_derand_total.min,
-         (unsigned long)breakdown->keypair_derand_total.max);
-  print_report_separator();
-  printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
-  print_report_separator();
-  print_breakdown_row("indcpa_total", &breakdown->indcpa_total, derand_avg);
-  print_breakdown_row("kem_tail", &breakdown->kem_tail, derand_avg);
-  print_report_separator();
-  print_breakdown_row("seed_expand(hash_g)", &breakdown->seed_expand, rebuild_avg);
-  print_breakdown_row("gen_matrix(A)", &breakdown->gen_matrix, rebuild_avg);
-  print_breakdown_row("sample(s,e)", &breakdown->sample, rebuild_avg);
-  print_breakdown_row("ntt(s,e)", &breakdown->ntt, rebuild_avg);
-  print_breakdown_row("Arith (A*s)", &breakdown->arith_as, rebuild_avg);
-  print_breakdown_row("Arith (toMont)", &breakdown->arith_tomont, rebuild_avg);
-  print_breakdown_row("Arith (+e)", &breakdown->arith_add_e, rebuild_avg);
-  print_breakdown_row("Arith (reduce)", &breakdown->arith_reduce, rebuild_avg);
-  print_breakdown_row("pack(pk,sk)", &breakdown->pack, rebuild_avg);
-  print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
-  print_report_separator();
-  printf("indcpa_total avg = %lu, rebuild_total avg = %lu\r\n",
-         cycle_u64_to_printable_ul(indcpa_avg),
-         cycle_u64_to_printable_ul(rebuild_avg));
-  printf("\r\n");
-}
-
-static void run_kyber_encrypt_breakdown_benchmark(uint32_t rounds,
-                                                  kyber_encrypt_breakdown_t *breakdown,
-                                                  uint32_t *error_count)
-{
-  static uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES];
-  static uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES];
-  static uint8_t c[KYBER_INDCPA_BYTES];
-  static uint8_t m[KYBER_INDCPA_MSGBYTES];
-  static uint8_t coins[KYBER_SYMBYTES];
-  static uint8_t keycoins[2 * KYBER_SYMBYTES];
-  static polyvec sp;
-  static polyvec pkpv;
-  static polyvec ep;
-  static polyvec at[KYBER_K];
-  static polyvec b;
-  static poly v;
-  static poly k;
-  static poly epp;
-  uint8_t seed[KYBER_SYMBYTES];
-  uint8_t nonce;
-  uint32_t t0;
-  uint32_t tstart;
-  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
-
-  init_cycle_stat(&breakdown->indcpa_total);
-  init_cycle_stat(&breakdown->unpack_msg);
-  init_cycle_stat(&breakdown->gen_at);
-  init_cycle_stat(&breakdown->sample);
-  init_cycle_stat(&breakdown->ntt);
-  init_cycle_stat(&breakdown->arith_u);
-  init_cycle_stat(&breakdown->arith_v);
-  init_cycle_stat(&breakdown->invntt);
-  init_cycle_stat(&breakdown->arith_add);
-  init_cycle_stat(&breakdown->arith_reduce);
-  init_cycle_stat(&breakdown->pack);
-  init_cycle_stat(&breakdown->indcpa_rebuild_total);
-  *error_count = 0u;
-
-  for(uint32_t round = 0; round < rounds; round++) {
-    fill_deterministic_bytes(keycoins, 2 * KYBER_SYMBYTES, round);
-    fill_deterministic_bytes(m, KYBER_INDCPA_MSGBYTES, round + 1u);
-    fill_deterministic_bytes(coins, KYBER_SYMBYTES, round + 2u);
-    indcpa_keypair_derand(pk, sk, keycoins);
-
-    t0 = DWT->CYCCNT;
-    indcpa_enc(c, m, pk, coins);
-    add_cycle_sample(&breakdown->indcpa_total, DWT->CYCCNT - t0);
-
-    tstart = DWT->CYCCNT;
-    t0 = DWT->CYCCNT;
-    polyvec_frombytes(&pkpv, pk);
-    memcpy(seed, pk + KYBER_POLYVECBYTES, KYBER_SYMBYTES);
-    poly_frommsg(&k, m);
-    add_cycle_sample(&breakdown->unpack_msg, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    gen_matrix(at, seed, 1);
-    add_cycle_sample(&breakdown->gen_at, DWT->CYCCNT - t0);
-
-    nonce = 0;
-    t0 = DWT->CYCCNT;
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      poly_getnoise_eta1(sp.vec + i, coins, nonce++);
-    }
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      poly_getnoise_eta2(ep.vec + i, coins, nonce++);
-    }
-    poly_getnoise_eta2(&epp, coins, nonce++);
-    add_cycle_sample(&breakdown->sample, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_ntt(&sp);
-    add_cycle_sample(&breakdown->ntt, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    for(uint32_t i = 0; i < KYBER_K; i++) {
-      polyvec_basemul_acc_montgomery(&b.vec[i], &at[i], &sp);
-    }
-    add_cycle_sample(&breakdown->arith_u, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_basemul_acc_montgomery(&v, &pkpv, &sp);
-    add_cycle_sample(&breakdown->arith_v, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_invntt_tomont(&b);
-    poly_invntt_tomont(&v);
-    add_cycle_sample(&breakdown->invntt, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_add(&b, &b, &ep);
-    poly_add(&v, &v, &epp);
-    poly_add(&v, &v, &k);
-    add_cycle_sample(&breakdown->arith_add, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_reduce(&b);
-    poly_reduce(&v);
-    add_cycle_sample(&breakdown->arith_reduce, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_compress(c, &b);
-    poly_compress(c + KYBER_POLYVECCOMPRESSEDBYTES, &v);
-    add_cycle_sample(&breakdown->pack, DWT->CYCCNT - t0);
-    add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
-    print_round_progress("ENC_BREAKDOWN", round + 1u, rounds, &next_progress_round);
-  }
-}
-
-static void print_encrypt_breakdown(const kyber_encrypt_breakdown_t *breakdown)
-{
-  uint64_t indcpa_avg = average_cycle_stat(&breakdown->indcpa_total);
-  uint64_t rebuild_avg = average_cycle_stat(&breakdown->indcpa_rebuild_total);
-
-  printf(">>> PART 2: Kyber512 Encrypt Breakdown (Cycles)\r\n");
-  print_report_separator();
-  printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
-  print_report_separator();
-  print_breakdown_row("unpack(pk)+msg", &breakdown->unpack_msg, rebuild_avg);
-  print_breakdown_row("gen_matrix(A^T)", &breakdown->gen_at, rebuild_avg);
-  print_breakdown_row("sample(r,e1,e2)", &breakdown->sample, rebuild_avg);
-  print_breakdown_row("ntt(r)", &breakdown->ntt, rebuild_avg);
-  print_breakdown_row("Arith (A^T*r)", &breakdown->arith_u, rebuild_avg);
-  print_breakdown_row("Arith (pk*r)", &breakdown->arith_v, rebuild_avg);
-  print_breakdown_row("invntt(u,v)", &breakdown->invntt, rebuild_avg);
-  print_breakdown_row("Arith (+e,+m)", &breakdown->arith_add, rebuild_avg);
-  print_breakdown_row("Arith (reduce)", &breakdown->arith_reduce, rebuild_avg);
-  print_breakdown_row("pack(ct)", &breakdown->pack, rebuild_avg);
-  print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
-  print_report_separator();
-  printf("indcpa_enc avg = %lu, rebuild_total avg = %lu\r\n",
-         cycle_u64_to_printable_ul(indcpa_avg),
-         cycle_u64_to_printable_ul(rebuild_avg));
-  printf("\r\n");
-}
-
-static void run_kyber_decrypt_breakdown_benchmark(uint32_t rounds,
-                                                  kyber_decrypt_breakdown_t *breakdown,
-                                                  uint32_t *error_count)
-{
-  static uint8_t pk[KYBER_INDCPA_PUBLICKEYBYTES];
-  static uint8_t sk[KYBER_INDCPA_SECRETKEYBYTES];
-  static uint8_t c[KYBER_INDCPA_BYTES];
-  static uint8_t m[KYBER_INDCPA_MSGBYTES];
-  static uint8_t m_ref[KYBER_INDCPA_MSGBYTES];
-  static uint8_t coins[KYBER_SYMBYTES];
-  static uint8_t keycoins[2 * KYBER_SYMBYTES];
-  static polyvec b;
-  static polyvec skpv;
-  static poly v;
-  static poly mp;
-  uint32_t t0;
-  uint32_t tstart;
-  uint32_t next_progress_round = PROGRESS_UPDATE_INTERVAL_ROUNDS;
-
-  init_cycle_stat(&breakdown->indcpa_total);
-  init_cycle_stat(&breakdown->unpack);
-  init_cycle_stat(&breakdown->ntt);
-  init_cycle_stat(&breakdown->arith_su);
-  init_cycle_stat(&breakdown->arith_invntt);
-  init_cycle_stat(&breakdown->arith_sub);
-  init_cycle_stat(&breakdown->arith_reduce);
-  init_cycle_stat(&breakdown->decode);
-  init_cycle_stat(&breakdown->indcpa_rebuild_total);
-  *error_count = 0u;
-
-  for(uint32_t round = 0; round < rounds; round++) {
-    fill_deterministic_bytes(keycoins, 2 * KYBER_SYMBYTES, round);
-    fill_deterministic_bytes(m, KYBER_INDCPA_MSGBYTES, round + 1u);
-    fill_deterministic_bytes(coins, KYBER_SYMBYTES, round + 2u);
-    indcpa_keypair_derand(pk, sk, keycoins);
-    indcpa_enc(c, m, pk, coins);
-
-    t0 = DWT->CYCCNT;
-    indcpa_dec(m_ref, c, sk);
-    add_cycle_sample(&breakdown->indcpa_total, DWT->CYCCNT - t0);
-
-    tstart = DWT->CYCCNT;
-    t0 = DWT->CYCCNT;
-    polyvec_decompress(&b, c);
-    poly_decompress(&v, c + KYBER_POLYVECCOMPRESSEDBYTES);
-    polyvec_frombytes(&skpv, sk);
-    add_cycle_sample(&breakdown->unpack, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_ntt(&b);
-    add_cycle_sample(&breakdown->ntt, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    polyvec_basemul_acc_montgomery(&mp, &skpv, &b);
-    add_cycle_sample(&breakdown->arith_su, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    poly_invntt_tomont(&mp);
-    add_cycle_sample(&breakdown->arith_invntt, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    poly_sub(&mp, &v, &mp);
-    add_cycle_sample(&breakdown->arith_sub, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    poly_reduce(&mp);
-    add_cycle_sample(&breakdown->arith_reduce, DWT->CYCCNT - t0);
-
-    t0 = DWT->CYCCNT;
-    poly_tomsg(m, &mp);
-    add_cycle_sample(&breakdown->decode, DWT->CYCCNT - t0);
-    add_cycle_sample(&breakdown->indcpa_rebuild_total, DWT->CYCCNT - tstart);
-
-    if(memcmp(m, m_ref, KYBER_INDCPA_MSGBYTES) != 0) {
-      (*error_count)++;
-    }
-    print_round_progress("DEC_BREAKDOWN", round + 1u, rounds, &next_progress_round);
-  }
-}
-
-static void print_decrypt_breakdown(const kyber_decrypt_breakdown_t *breakdown)
-{
-  uint64_t indcpa_avg = average_cycle_stat(&breakdown->indcpa_total);
-  uint64_t rebuild_avg = average_cycle_stat(&breakdown->indcpa_rebuild_total);
-
-  printf(">>> PART 3: Kyber512 Decrypt Breakdown (Cycles)\r\n");
-  print_report_separator();
-  printf("%-24s | %-14s | %-12s\r\n", "Stage", "Avg Cycles", "Share(%)");
-  print_report_separator();
-  print_breakdown_row("unpack(ct,sk)", &breakdown->unpack, rebuild_avg);
-  print_breakdown_row("ntt(u)", &breakdown->ntt, rebuild_avg);
-  print_breakdown_row("Arith (s*u)", &breakdown->arith_su, rebuild_avg);
-  print_breakdown_row("Arith (invntt)", &breakdown->arith_invntt, rebuild_avg);
-  print_breakdown_row("Arith (v-su)", &breakdown->arith_sub, rebuild_avg);
-  print_breakdown_row("Arith (reduce)", &breakdown->arith_reduce, rebuild_avg);
-  print_breakdown_row("decode(msg)", &breakdown->decode, rebuild_avg);
-  print_breakdown_row("rebuild_total", &breakdown->indcpa_rebuild_total, rebuild_avg);
-  print_report_separator();
-  printf("indcpa_dec avg = %lu, rebuild_total avg = %lu\r\n",
-         cycle_u64_to_printable_ul(indcpa_avg),
-         cycle_u64_to_printable_ul(rebuild_avg));
-  printf("\r\n");
-}
-
-static void run_kem_comparison_benchmark(void)
-{
-  kem_summary_t kyber_summary = {
-    .name = "Kyber512",
-    .keygen_cycles = 0,
-    .encaps_cycles = 0,
-    .decaps_cycles = 0,
-    .keygen_success_count = 0,
-    .encaps_success_count = 0,
-    .decaps_success_count = 0,
-    .error_count = 0,
-    .mismatch_count = 0
-  };
-  kyber_keygen_breakdown_t keygen_breakdown;
-  kyber_encrypt_breakdown_t encrypt_breakdown;
-  kyber_decrypt_breakdown_t decrypt_breakdown;
-  uint32_t keygen_breakdown_error_count = 0u;
-  uint32_t encrypt_breakdown_error_count = 0u;
-  uint32_t decrypt_breakdown_error_count = 0u;
-
-  printf("\r\n=== Kyber512 Comprehensive Benchmark Report ===\r\n");
-  printf("Rounds: %lu\r\n\r\n", (unsigned long)BENCH_ROUNDS);
-  print_kyber_data_sizes();
-
-  enable_cycle_counter();
-
-  run_kyber_benchmark(BENCH_ROUNDS,
-                      &kyber_summary.keygen_cycles,
-                      &kyber_summary.encaps_cycles,
-                      &kyber_summary.decaps_cycles,
-                      &kyber_summary.keygen_success_count,
-                      &kyber_summary.encaps_success_count,
-                      &kyber_summary.decaps_success_count,
-                      &kyber_summary.error_count,
-                      &kyber_summary.mismatch_count);
-  run_kyber_keygen_breakdown_benchmark(BENCH_ROUNDS,
-                                       &keygen_breakdown,
-                                       &keygen_breakdown_error_count);
-  run_kyber_encrypt_breakdown_benchmark(BENCH_ROUNDS,
-                                        &encrypt_breakdown,
-                                        &encrypt_breakdown_error_count);
-  run_kyber_decrypt_breakdown_benchmark(BENCH_ROUNDS,
-                                        &decrypt_breakdown,
-                                        &decrypt_breakdown_error_count);
-
-  print_keygen_breakdown(&keygen_breakdown);
-  print_encrypt_breakdown(&encrypt_breakdown);
-  print_decrypt_breakdown(&decrypt_breakdown);
-
-  printf(">>> PART 4: KEM Full Flow Summary (IND-CCA2)\r\n");
-  print_report_separator();
-  printf("%-*s | %-*s | %-*s | %-*s | %-*s\r\n",
-         KEM_SCHEME_COL_WIDTH,
-         "Scheme",
-         KEM_CYCLES_COL_WIDTH,
-         "KeyGen",
-         KEM_CYCLES_COL_WIDTH,
-         "Encaps",
-         KEM_CYCLES_COL_WIDTH,
-         "Decaps",
-         KEM_MISMATCH_COL_WIDTH,
-         "Mismatch");
-  print_report_separator();
-  print_kem_summary_row(&kyber_summary);
-  print_report_separator();
-  printf("KEM operation error count: %lu\r\n", (unsigned long)kyber_summary.error_count);
-  printf("KeyGen breakdown error count: %lu\r\n", (unsigned long)keygen_breakdown_error_count);
-  printf("Encrypt breakdown error count: %lu\r\n", (unsigned long)encrypt_breakdown_error_count);
-  printf("Decrypt breakdown error count: %lu\r\n", (unsigned long)decrypt_breakdown_error_count);
-  printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)kyber_summary.mismatch_count);
+static void run_kem_comparison_benchmark(void){
+  kem_summary_t s={.name="Saber",.keygen_cycles=0,.encaps_cycles=0,.decaps_cycles=0,.keygen_success_count=0,.encaps_success_count=0,.decaps_success_count=0,.error_count=0,.mismatch_count=0};
+  saber_keygen_breakdown_t kg; saber_encrypt_breakdown_t en; saber_decrypt_breakdown_t de; uint32_t kg_err=0,en_err=0,de_err=0;
+  printf("\r\n=== Saber Comprehensive Benchmark Report ===\r\n"); printf("Rounds: %lu\r\n\r\n",(unsigned long)BENCH_ROUNDS); print_saber_data_sizes(); enable_cycle_counter();
+  run_saber_benchmark(BENCH_ROUNDS,&s.keygen_cycles,&s.encaps_cycles,&s.decaps_cycles,&s.keygen_success_count,&s.encaps_success_count,&s.decaps_success_count,&s.error_count,&s.mismatch_count);
+  run_saber_keygen_breakdown_benchmark(BENCH_ROUNDS,&kg,&kg_err); run_saber_encrypt_breakdown_benchmark(BENCH_ROUNDS,&en,&en_err); run_saber_decrypt_breakdown_benchmark(BENCH_ROUNDS,&de,&de_err);
+  print_keygen_breakdown(&kg); print_encrypt_breakdown(&en); print_decrypt_breakdown(&de);
+  printf(">>> PART 4: KEM Full Flow Summary (IND-CCA2)\r\n"); print_report_separator();
+  printf("%-*s | %-*s | %-*s | %-*s | %-*s\r\n",KEM_SCHEME_COL_WIDTH,"Scheme",KEM_CYCLES_COL_WIDTH,"KeyGen",KEM_CYCLES_COL_WIDTH,"Encaps",KEM_CYCLES_COL_WIDTH,"Decaps",KEM_MISMATCH_COL_WIDTH,"Mismatch");
+  print_report_separator(); print_kem_summary_row(&s); print_report_separator();
+  printf("KEM operation error count: %lu\r\n",(unsigned long)s.error_count);
+  printf("KeyGen breakdown error count: %lu\r\n",(unsigned long)kg_err);
+  printf("Encrypt breakdown error count: %lu\r\n",(unsigned long)en_err);
+  printf("Decrypt breakdown error count: %lu\r\n",(unsigned long)de_err);
+  printf("KEM shared-secret mismatch count: %lu\r\n",(unsigned long)s.mismatch_count);
   printf("[FINAL] Benchmark complete.\r\n\r\n");
 }
-/* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
-  HAL_Init();
-  SystemClock_Config();
-
-  MX_GPIO_Init();
-  MX_USART1_UART_Init();
-  MX_RNG_Init();
-
-  HAL_UART_Receive_IT(&huart1, &rx_buffer, 1);
-
-  /* USER CODE BEGIN 2 */
-  printf("=========================\r\n");
-  printf("  KYBER TEST SYSTEM READY\r\n");
-  printf("=========================\r\n");
-  printf("TEST ROUNDS: %lu\r\n", (unsigned long)BENCH_ROUNDS);
-  printf("CMD: C=RUN KYBER512 COMPREHENSIVE REPORT (%lu rounds)\r\n", (unsigned long)BENCH_ROUNDS);
-  printf("BUILD MODE: KYBER-ONLY BENCHMARK\r\n");
-  printf("=========================\r\n");
-  /* USER CODE END 2 */
-
-  while (1)
-  {
-    if(cmd_flag == 1)
-    {
-      cmd_flag = 0;
-
-      if(cmd == 'C' || cmd == 'c')
-      {
-        run_kem_comparison_benchmark();
-      }
-      else
-      {
-        printf("ONLY CMD 'C' IS ENABLED\r\n\r\n");
-      }
-    }
-  }
+int main(void){
+  HAL_Init(); SystemClock_Config(); MX_GPIO_Init(); MX_USART1_UART_Init(); MX_RNG_Init(); HAL_UART_Receive_IT(&huart1,&rx_buffer,1);
+  printf("=========================\r\n  SABER TEST SYSTEM READY\r\n=========================\r\n");
+  printf("TEST ROUNDS: %lu\r\n",(unsigned long)BENCH_ROUNDS);
+  printf("CMD: C=RUN SABER COMPREHENSIVE REPORT (%lu rounds)\r\n",(unsigned long)BENCH_ROUNDS);
+  printf("BUILD MODE: SABER-ONLY BENCHMARK\r\n=========================\r\n");
+  while(1){ if(cmd_flag==1){ cmd_flag=0; if(cmd=='C'||cmd=='c') run_kem_comparison_benchmark(); else printf("ONLY CMD 'C' IS ENABLED\r\n\r\n"); } }
 }
 
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 168;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 7;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
-
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
-  {
-    Error_Handler();
-  }
+void SystemClock_Config(void){
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0}; RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  __HAL_RCC_PWR_CLK_ENABLE(); __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI; RCC_OscInitStruct.HSIState = RCC_HSI_ON; RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT; RCC_OscInitStruct.LSIState = RCC_LSI_ON; RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON; RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI; RCC_OscInitStruct.PLL.PLLM = 8; RCC_OscInitStruct.PLL.PLLN = 168; RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2; RCC_OscInitStruct.PLL.PLLQ = 7;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2; RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK; RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1; RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4; RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK) Error_Handler();
 }
 
-/* USER CODE BEGIN 4 */
-
-/* USER CODE END 4 */
-
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
-  /* USER CODE BEGIN Error_Handler_Debug */
-  __disable_irq();
-  while (1)
-  {
-  }
-  /* USER CODE END Error_Handler_Debug */
-}
+void Error_Handler(void){ __disable_irq(); while (1){} }
 #ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
-}
-#endif /* USE_FULL_ASSERT */
+void assert_failed(uint8_t *file, uint32_t line){ (void)file; (void)line; }
+#endif
