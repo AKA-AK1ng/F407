@@ -1,8 +1,8 @@
 #include "poly.h"
 #include "ntt.h"
 #include "reduce.h"
-#include "fips202.h"
-#include "..\common\params.h"
+#include "../common/fips202.h"
+#include "../common/params.h"
 
 
 static inline int16_t load24_littleendian(const uint8_t x[3]) {

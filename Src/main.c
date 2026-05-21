@@ -95,11 +95,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 typedef struct {
-  uint64_t mul;
-  uint64_t as;
-  uint64_t atr;
-  uint64_t btr;
-  uint64_t stu;
   uint64_t pke_keygen;
   uint64_t pke_encrypt;
   uint64_t pke_decrypt;
@@ -108,11 +103,17 @@ typedef struct {
   uint64_t kem_encaps;
   uint64_t kem_decaps;
   uint32_t kem_mismatch_count;
-} viper_bench_totals_t;
+} viper_run_totals_t;
 
 static uint64_t viper_bench_avg(uint64_t total)
 {
   return total / VIPER_BENCH_ROUNDS;
+}
+
+static uint64_t viper_bench_avg_per_call(uint64_t total, uint32_t count)
+{
+  if (count == 0u) return 0u;
+  return total / (uint64_t)count;
 }
 
 static uint64_t systick_now_cycles(void)
@@ -129,13 +130,8 @@ static uint64_t systick_now_cycles(void)
   return ((uint64_t)ms1 * (uint64_t)reload) + (uint64_t)(reload - val);
 }
 
-static void measure_viper_round(viper_bench_totals_t *totals)
+static void measure_viper_round(viper_run_totals_t *totals)
 {
-  vpoly A[VIPER_K][VIPER_K];
-  uint16_t dpk[VIPER_K][VIPER_N];
-  vpolyvec s, r, b, u;
-  vpoly t;
-  uint8_t rseed[32];
   uint64_t t0;
   uint8_t pk[CRYPTO_PUBLICKEYBYTES];
   uint8_t sk[CRYPTO_SECRETKEYBYTES];
@@ -154,31 +150,6 @@ static void measure_viper_round(viper_bench_totals_t *totals)
 
   random_bytes(rho, sizeof(rho));
   random_bytes(sseed, sizeof(sseed));
-  random_bytes(rseed, sizeof(rseed));
-
-  viper_gen_public(A, dpk, rho);
-  viper_sample_secret(s, sseed, VIPER_ETA_S);
-  viper_sample_secret(r, rseed, VIPER_ETA_R);
-
-  t0 = systick_now_cycles();
-  viper_poly_mul(t, A[0][0], s[0]);                   // poly mul
-  totals->mul += (systick_now_cycles() - t0);
-
-  t0 = systick_now_cycles();
-  viper_matvec(b, A, s);                              // A*s
-  totals->as += (systick_now_cycles() - t0);
-
-  t0 = systick_now_cycles();
-  viper_matTvec(u, A, r);                             // A^T*r    
-  totals->atr += (systick_now_cycles() - t0);
-
-  t0 = systick_now_cycles();
-  viper_dot(t, b, r);                                 // b^T*r
-  totals->btr += (systick_now_cycles() - t0);
-
-  t0 = systick_now_cycles();
-  viper_dot(t, s, u);                                 // s^T*u
-  totals->stu += (systick_now_cycles() - t0);
 
   random_bytes(msg_in, sizeof(msg_in));
   random_bytes(omega, sizeof(omega));
@@ -218,12 +189,14 @@ static void measure_viper_round(viper_bench_totals_t *totals)
 
 static void run_viper_breakdown(void)
 {
-  viper_bench_totals_t totals = {0};
+  viper_run_totals_t totals = {0};
+  viper_bench_totals_t bench = {0};
 
   printf("\r\n=== Viper Breakdown Benchmark (STM32 Scalar) ===\r\n");
   printf("VIPER_LEVEL=%d\r\n", VIPER_LEVEL);
   viper_backend_report(stdout);
 
+  viper_bench_reset();
   for(uint32_t round = 0; round < VIPER_BENCH_ROUNDS; round++)
   {
     measure_viper_round(&totals);
@@ -233,15 +206,26 @@ static void run_viper_breakdown(void)
              (unsigned long)VIPER_BENCH_ROUNDS);
     }
   }
+  viper_bench_get(&bench);
 
   printf("\r\n%s", PROFILE_SEPARATOR);
   printf(" Viper Breakdown (Avg, %lu rounds)\r\n", (unsigned long)VIPER_BENCH_ROUNDS);
   printf("%s", PROFILE_SEPARATOR);
-  printf("Mul: %lu\r\n", (unsigned long)viper_bench_avg(totals.mul));
-  printf("A*s: %lu\r\n", (unsigned long)viper_bench_avg(totals.as));
-  printf("A^T*r: %lu\r\n", (unsigned long)viper_bench_avg(totals.atr));
-  printf("b^T*r: %lu\r\n", (unsigned long)viper_bench_avg(totals.btr));
-  printf("s^T*u: %lu\r\n", (unsigned long)viper_bench_avg(totals.stu));
+    printf("Mul: %lu (per-call %lu)\r\n",
+      (unsigned long)viper_bench_avg(bench.mul),
+      (unsigned long)viper_bench_avg_per_call(bench.mul, bench.mul_count));
+    printf("A*s: %lu (per-call %lu)\r\n",
+      (unsigned long)viper_bench_avg(bench.as),
+      (unsigned long)viper_bench_avg_per_call(bench.as, bench.as_count));
+    printf("A^T*r: %lu (per-call %lu)\r\n",
+      (unsigned long)viper_bench_avg(bench.atr),
+      (unsigned long)viper_bench_avg_per_call(bench.atr, bench.atr_count));
+    printf("b^T*r: %lu (per-call %lu)\r\n",
+      (unsigned long)viper_bench_avg(bench.btr),
+      (unsigned long)viper_bench_avg_per_call(bench.btr, bench.btr_count));
+    printf("s^T*u: %lu (per-call %lu)\r\n",
+      (unsigned long)viper_bench_avg(bench.stu),
+      (unsigned long)viper_bench_avg_per_call(bench.stu, bench.stu_count));
 
   printf("\r\n%s", PROFILE_SEPARATOR);
   printf(" Viper PKE (Avg, %lu rounds)\r\n", (unsigned long)VIPER_BENCH_ROUNDS);
@@ -250,7 +234,6 @@ static void run_viper_breakdown(void)
   printf("PKE Encrypt: %lu\r\n", (unsigned long)viper_bench_avg(totals.pke_encrypt));
   printf("PKE Decrypt: %lu\r\n", (unsigned long)viper_bench_avg(totals.pke_decrypt));
   printf("PKE mismatch count: %lu\r\n", (unsigned long)totals.pke_mismatch_count);
-
   printf("\r\n%s", PROFILE_SEPARATOR);
   printf(" Viper KEM (Avg, %lu rounds)\r\n", (unsigned long)VIPER_BENCH_ROUNDS);
   printf("%s", PROFILE_SEPARATOR);
