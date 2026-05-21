@@ -31,6 +31,7 @@
 #include "../ref_viper/api.h"
 #include "../ref_viper/viper.h"
 #include "../ref_viper/viper_arith.h"
+#include "stm32f4xx.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,7 +47,7 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
-#define VIPER_BENCH_ROUNDS 200u
+#define VIPER_BENCH_ROUNDS 100u
 #define VIPER_BENCH_PROGRESS_STEP 100u
 /* USER CODE END PM */
 
@@ -116,18 +117,17 @@ static uint64_t viper_bench_avg_per_call(uint64_t total, uint32_t count)
   return total / (uint64_t)count;
 }
 
-static uint64_t systick_now_cycles(void)
+static void dwt_enable_cycle_counter(void)
 {
-  uint32_t ms1, ms2, val;
-  uint32_t reload = SysTick->LOAD + 1u;
+  /* Enable trace and DWT cycle counter */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
 
-  do {
-    ms1 = HAL_GetTick();
-    val = SysTick->VAL;
-    ms2 = HAL_GetTick();
-  } while (ms2 != ms1);
-
-  return ((uint64_t)ms1 * (uint64_t)reload) + (uint64_t)(reload - val);
+static uint64_t dwt_now_cycles(void)
+{
+  return (uint64_t)DWT->CYCCNT;
 }
 
 static void measure_viper_round(viper_run_totals_t *totals)
@@ -154,33 +154,33 @@ static void measure_viper_round(viper_run_totals_t *totals)
   random_bytes(msg_in, sizeof(msg_in));
   random_bytes(omega, sizeof(omega));
 
-  t0 = systick_now_cycles();
+  t0 = dwt_now_cycles();
   viper_pke_keypair(pk_pke, skpke, rho, sseed);
-  totals->pke_keygen += (systick_now_cycles() - t0);
+  totals->pke_keygen += (dwt_now_cycles() - t0);
 
-  t0 = systick_now_cycles();
+  t0 = dwt_now_cycles();
   viper_pke_enc(ct_pke, pk_pke, msg_in, omega);
-  totals->pke_encrypt += (systick_now_cycles() - t0);
+  totals->pke_encrypt += (dwt_now_cycles() - t0);
 
-  t0 = systick_now_cycles();
+  t0 = dwt_now_cycles();
   viper_pke_dec(msg_out, skpke, ct_pke);
-  totals->pke_decrypt += (systick_now_cycles() - t0);
+  totals->pke_decrypt += (dwt_now_cycles() - t0);
 
   if(memcmp(msg_in, msg_out, sizeof(msg_in)) != 0) {
     totals->pke_mismatch_count++;
   }
 
-  t0 = systick_now_cycles();
+  t0 = dwt_now_cycles();
   kem_ok = (crypto_kem_keypair(pk, sk) == 0);
-  totals->kem_keygen += (systick_now_cycles() - t0);
+  totals->kem_keygen += (dwt_now_cycles() - t0);
 
-  t0 = systick_now_cycles();
+  t0 = dwt_now_cycles();
   kem_ok = kem_ok && (crypto_kem_enc(ct, ss1, pk) == 0);
-  totals->kem_encaps += (systick_now_cycles() - t0);
+  totals->kem_encaps += (dwt_now_cycles() - t0);
 
-  t0 = systick_now_cycles();
+  t0 = dwt_now_cycles();
   kem_ok = kem_ok && (crypto_kem_dec(ss2, ct, sk) == 0);
-  totals->kem_decaps += (systick_now_cycles() - t0);
+  totals->kem_decaps += (dwt_now_cycles() - t0);
 
   if((!kem_ok) || (memcmp(ss1, ss2, CRYPTO_BYTES) != 0)) {
     totals->kem_mismatch_count++;
@@ -267,6 +267,9 @@ int main(void)
   HAL_UART_Receive_IT(&huart1, &rx_buffer, 1);
 
   /* USER CODE BEGIN 2 */
+  // 启用 DWT 计数器用于周期计时
+  dwt_enable_cycle_counter();
+
   // 开机提示
   printf("=========================\r\n");
   printf("  VIPER TEST SYSTEM READY\r\n");
@@ -322,7 +325,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 72;       // 从168改为72
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV6; // 从DIV2改为DIV6
-  RCC_OscInitStruct.PLL.PLLQ = 7;        // 不用USB可保留，用USB需改为3
+  RCC_OscInitStruct.PLL.PLLQ = 3;        // 不用USB可保留，用USB需改为3，改回了3匹配pqm4
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -334,7 +337,7 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;   // HCLK=24MHz
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;    // PCLK1=24MHz
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;    // PCLK1=24MHz，改为了2匹配pqm4
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;    // PCLK2=24MHz
 
   // ====================== 修改点2：修复闪存等待周期（致命错误） ======================

@@ -25,14 +25,8 @@ void viper_bench_get(viper_bench_totals_t *out) {
 
 uint64_t viper_bench_now_cycles(void) {
 #if VIPER_BENCH_ENABLE
-  uint32_t ms1, ms2, val;
-  uint32_t reload = SysTick->LOAD + 1u;
-  do {
-    ms1 = HAL_GetTick();
-    val = SysTick->VAL;
-    ms2 = HAL_GetTick();
-  } while (ms2 != ms1);
-  return ((uint64_t)ms1 * (uint64_t)reload) + (uint64_t)(reload - val);
+  /* Use DWT cycle counter for cycle-accurate measurement */
+  return (uint64_t)DWT->CYCCNT;
 #else
   return 0;
 #endif
