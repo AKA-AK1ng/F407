@@ -25,12 +25,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "led.h"
 #include "stdio.h"  // 用于printf
-#include "ctype.h"
-#include "stdlib.h"
+#include "string.h"
 #include "random.h"
 #include "params.h"
+#include "../ref/poly.h"
+#include "../ref/xof.h"
+#include "../ref/mlwq.h"
+#include "../ref_viper/viper.h"
+#include "../ref_viper/viper_arith.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +48,11 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define PROFILE_SEPARATOR "----------------------------------------------------------------------------------------------\r\n"
+#define MLWQ_BENCH_ROUNDS 200u
+#define MLWQ_BENCH_PROGRESS_STEP 100u
+#define VIPER_BENCH_ROUNDS 200u
+#define VIPER_BENCH_PROGRESS_STEP 100u
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -56,13 +63,13 @@ uint8_t rx_buffer;        // 单字节接收缓存
 uint8_t cmd_flag = 0;     // 指令有效标志
 char cmd;                 // 存储接收到的指令
 
-// RNG随机数变量
-uint32_t random_num;      // 存储32位硬件随机数
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static void run_mlwq_benchmark(void);
+static void run_viper_breakdown(void);
 
 /* USER CODE END PFP */
 
@@ -92,6 +99,461 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     HAL_UART_Receive_IT(&huart1, &rx_buffer, 1);
   }
 }
+
+typedef struct {
+  uint64_t key_genA;
+  uint64_t key_sample_s;
+  uint64_t key_gendither;
+  uint64_t key_arith_as;
+  uint64_t key_quantize;
+
+  uint64_t enc_genA;
+  uint64_t enc_sample_r;
+  uint64_t enc_gendither_u;
+  uint64_t enc_arith_u;
+  uint64_t enc_arith_v;
+  uint64_t enc_quantize_u;
+
+  uint64_t dec_deq;
+  uint64_t dec_arith;
+  uint64_t dec_decode;
+
+  uint64_t pke_keygen;
+  uint64_t pke_encrypt;
+  uint64_t pke_decrypt;
+
+  uint64_t kem_keygen;
+  uint64_t kem_encaps;
+  uint64_t kem_decaps;
+
+  uint32_t pke_mismatch_count;
+  uint32_t kem_mismatch_count;
+} mlwq_bench_totals_t;
+
+typedef struct {
+  uint64_t mul;
+  uint64_t as;
+  uint64_t atr;
+  uint64_t btr;
+  uint64_t stu;
+} viper_bench_totals_t;
+
+static uint64_t bench_avg(uint64_t total)
+{
+  return total / MLWQ_BENCH_ROUNDS;
+}
+
+static uint64_t viper_bench_avg(uint64_t total)
+{
+  return total / VIPER_BENCH_ROUNDS;
+}
+
+static void print_data_sizes(void)
+{
+  printf(">>> PART 0: Protocol Data Sizes (Serialized/Wire Format)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("%-35s %-15s\r\n", "Component", "Size (Bytes)");
+  printf("%s", PROFILE_SEPARATOR);
+
+  // ===================== 新增：输出安全等级与核心算法参数 =====================
+    printf("[SECURITY] NIST Security Level:      %d\r\n", NIST_LEVEL);
+    printf("[PARAM] Algorithm Name:               %s\r\n", PARAM_NAME);
+    printf("[PARAM] MLWQ_N:                       %d\r\n", MLWQ_N);
+    printf("[PARAM] MLWQ_Q:                       %d\r\n", MLWQ_Q);
+    printf("[PARAM] MLWQ_K:                       %d\r\n", MLWQ_K);
+    printf("[PARAM] MLWQ_ETA1:                    %d\r\n", MLWQ_ETA1);
+    printf("[PARAM] BIT_PK (压缩位宽):            %d\r\n", BIT_PK);
+    printf("[PARAM] BIT_U  (压缩位宽):            %d\r\n", BIT_U);
+    printf("[PARAM] BIT_V  (压缩位宽):            %d\r\n", BIT_V);
+    printf("[PARAM] P_PK:                         %d\r\n", P_PK);
+    printf("[PARAM] P_U:                          %d\r\n", P_U);
+    printf("[PARAM] P_V:                          %d\r\n", P_V);
+    printf("[PARAM] SEEDBYTES:                    %d\r\n", SEEDBYTES);
+    printf("[PARAM] HASHBYTES:                    %d\r\n", HASHBYTES);
+    printf("[PARAM] Shared Secret Bytes:          %d\r\n", MLWQ_SSBYTES);
+    printf("%s", PROFILE_SEPARATOR);
+
+    // ===================== 原有的数据长度输出 =====================
+
+  printf("[PKE] Public Key (pk):\r\n");
+  printf("  %-33s %d\r\n", "MLWQ_PUBLICKEYBYTES", MLWQ_PUBLICKEYBYTES);
+  printf("[PKE] Secret Key (sk):\r\n");
+  printf("  %-33s %d\r\n", "MLWQ_SECRETKEYBYTES", MLWQ_SECRETKEYBYTES);
+  printf("[PKE] Ciphertext (ct):\r\n");
+  printf("  %-33s %d\r\n\r\n", "MLWQ_CIPHERTEXTBYTES", MLWQ_CIPHERTEXTBYTES);
+
+  printf("[KEM] Public Key:\r\n");
+  printf("  %-33s %d\r\n", "Same as PKE PK", MLWQ_PUBLICKEYBYTES);
+  printf("[KEM] Secret Key (Bundled):\r\n");
+  printf("  %-33s %d (Approx. Theoretical)\r\n",
+         "sk + pk + H(pk) + z",
+         (int)(MLWQ_SECRETKEYBYTES + MLWQ_PUBLICKEYBYTES + 32 + 32));
+  printf("[KEM] Ciphertext:\r\n");
+  printf("  %-33s %d\r\n", "Same as PKE CT", MLWQ_CIPHERTEXTBYTES);
+  printf("[KEM] Shared Secret (ss):\r\n");
+  printf("  %-33s %d\r\n", "MLWQ_SSBYTES", MLWQ_SSBYTES);
+  printf("%s\r\n", PROFILE_SEPARATOR);
+}
+
+static void measure_pke_keygen_round(mlwq_bench_totals_t *totals)
+{
+  static poly_matrix A;
+  static poly_vec s, d_pk, As, b_q;
+  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_s[SEEDBYTES], d_seed[33];
+  uint32_t t0;
+  uint64_t dt_mat, dt_samp, dt_dith, dt_arith, dt_quant;
+
+  random_bytes(seed_A, sizeof(seed_A));
+  random_bytes(seed_d, sizeof(seed_d));
+  random_bytes(seed_s, sizeof(seed_s));
+
+  t0 = DWT->CYCCNT;
+  ref_xof_expand_matrix(&A, seed_A);
+  dt_mat = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_genA += dt_mat;
+
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; i++) {
+    ref_poly_getnoise_eta1(&s.vec[i], seed_s, (uint8_t)i);
+  }
+  dt_samp = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_sample_s += dt_samp;
+
+  for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_d[i];
+  d_seed[SEEDBYTES] = 0xFF;
+  t0 = DWT->CYCCNT;
+  ref_xof_expand_poly_vec(&d_pk, d_seed, MLWQ_Q / P_PK);
+  dt_dith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_gendither += dt_dith;
+
+  t0 = DWT->CYCCNT;
+  ref_poly_matrix_vec_mul(&As, &A, &s);
+  dt_arith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_arith_as += dt_arith;
+
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; ++i) {
+    ref_poly_quantize(&b_q.vec[i], &As.vec[i], &d_pk.vec[i], P_PK);
+  }
+  dt_quant = (uint64_t)(DWT->CYCCNT - t0);
+  totals->key_quantize += dt_quant;
+
+  totals->pke_keygen += (dt_mat + dt_samp + dt_dith + dt_arith + dt_quant);
+}
+
+static void measure_pke_encrypt_round(mlwq_bench_totals_t *totals)
+{
+  static mlwq_pk pk;
+  static mlwq_sk sk;
+  static poly_matrix A, At;
+  static poly_vec r, d_u, Atr, u_q, b_deq;
+  static poly v_val;
+  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES], d_seed[33];
+  uint32_t t0;
+  uint64_t dt_mat, dt_samp, dt_dith, dt_au, dt_av, dt_quant;
+
+  random_bytes(seed_A, sizeof(seed_A));
+  random_bytes(seed_d, sizeof(seed_d));
+  random_bytes(seed_ct, sizeof(seed_ct));
+  ref_mlwq_keygen(&pk, &sk, seed_A, seed_d);
+
+  t0 = DWT->CYCCNT;
+  ref_xof_expand_matrix(&A, pk.seed_A);
+  dt_mat = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_genA += dt_mat;
+
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; i++) {
+    ref_poly_getnoise_eta1(&r.vec[i], seed_ct, (uint8_t)i);
+  }
+  dt_samp = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_sample_r += dt_samp;
+
+  for(int i = 0; i < SEEDBYTES; i++) d_seed[i] = seed_ct[i];
+  d_seed[SEEDBYTES] = 10;
+  t0 = DWT->CYCCNT;
+  ref_xof_expand_poly_vec(&d_u, d_seed, MLWQ_Q / P_U);
+  dt_dith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_gendither_u += dt_dith;
+
+  for(int i = 0; i < MLWQ_K; i++) {
+    for(int j = 0; j < MLWQ_K; j++) {
+      At.row[i].vec[j] = A.row[j].vec[i];
+    }
+  }
+  t0 = DWT->CYCCNT;
+  ref_poly_matrix_vec_mul(&Atr, &At, &r);
+  dt_au = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_arith_u += dt_au;
+
+  for(int i = 0; i < MLWQ_K; ++i) {
+    ref_poly_dequantize(&b_deq.vec[i], &pk.b_q.vec[i], P_PK);
+  }
+  t0 = DWT->CYCCNT;
+  ref_poly_vec_transpose_mul(&v_val, &b_deq, &r);
+  dt_av = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_arith_v += dt_av;
+
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; ++i) {
+    ref_poly_quantize(&u_q.vec[i], &Atr.vec[i], &d_u.vec[i], P_U);
+  }
+  dt_quant = (uint64_t)(DWT->CYCCNT - t0);
+  totals->enc_quantize_u += dt_quant;
+
+  totals->pke_encrypt += (dt_mat + dt_samp + dt_dith + dt_au + dt_av + dt_quant);
+}
+
+static void measure_pke_decrypt_round(mlwq_bench_totals_t *totals)
+{
+  static mlwq_pk pk;
+  static mlwq_sk sk;
+  static mlwq_ciphertext ct;
+  static poly_vec u_deq;
+  static poly v_deq, s_t_u, diff;
+  static uint8_t msg_in[32], msg_out[32];
+  static uint8_t seed_A[SEEDBYTES], seed_d[SEEDBYTES], seed_ct[SEEDBYTES];
+  uint32_t t0;
+  uint64_t dt_dq, dt_arith, dt_dec;
+
+  random_bytes(seed_A, sizeof(seed_A));
+  random_bytes(seed_d, sizeof(seed_d));
+  random_bytes(seed_ct, sizeof(seed_ct));
+  random_bytes(msg_in, sizeof(msg_in));
+  ref_mlwq_keygen(&pk, &sk, seed_A, seed_d);
+  ref_mlwq_encrypt(&ct, &pk, msg_in, seed_ct);
+
+  t0 = DWT->CYCCNT;
+  for(int i = 0; i < MLWQ_K; i++) {
+    ref_poly_dequantize(&u_deq.vec[i], &ct.u.vec[i], P_U);
+  }
+  ref_poly_dequantize(&v_deq, &ct.v, P_V);
+  dt_dq = (uint64_t)(DWT->CYCCNT - t0);
+  totals->dec_deq += dt_dq;
+
+  t0 = DWT->CYCCNT;
+  ref_poly_vec_transpose_mul(&s_t_u, &sk.s, &u_deq);
+  ref_poly_sub(&diff, &v_deq, &s_t_u);
+  dt_arith = (uint64_t)(DWT->CYCCNT - t0);
+  totals->dec_arith += dt_arith;
+
+  t0 = DWT->CYCCNT;
+  ref_poly_msg_decode(msg_out, &diff);
+  dt_dec = (uint64_t)(DWT->CYCCNT - t0);
+  totals->dec_decode += dt_dec;
+
+  totals->pke_decrypt += (dt_dq + dt_arith + dt_dec);
+  if(memcmp(msg_in, msg_out, sizeof(msg_in)) != 0) {
+    totals->pke_mismatch_count++;
+  }
+}
+
+static void measure_kem_round(mlwq_bench_totals_t *totals)
+{
+  static mlwq_pk pk;
+  static mlwq_kem_sk sk;
+  static mlwq_ciphertext ct;
+  static uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
+  uint32_t t0;
+  int dec_ok;
+
+  t0 = DWT->CYCCNT;
+  ref_mlwq_kem_keygen(&pk, &sk);
+  totals->kem_keygen += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  ref_mlwq_kem_encaps(&ct, ss1, &pk);
+  totals->kem_encaps += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  dec_ok = ref_mlwq_kem_decaps(ss2, &sk, &ct);
+  totals->kem_decaps += (uint64_t)(DWT->CYCCNT - t0);
+
+  if((dec_ok == 0) || (memcmp(ss1, ss2, MLWQ_SSBYTES) != 0)) {
+    totals->kem_mismatch_count++;
+  }
+}
+
+static void run_mlwq_benchmark(void)
+{
+  mlwq_bench_totals_t totals = {0};
+  uint64_t q_avg, s_avg;
+  uint32_t correctness_ok;
+
+  printf("\r\n=== M-LWQ Comprehensive Performance Report (STM32 Scalar) ===\r\n");
+  printf("%sN=%d, K=%d\r\n\r\n", PARAM_NAME, MLWQ_N, MLWQ_K);
+  print_data_sizes();
+
+  printf(">>> Running scalar correctness check...\r\n");
+  {
+    mlwq_pk pk;
+    mlwq_kem_sk sk;
+    mlwq_ciphertext ct;
+    uint8_t ss1[MLWQ_SSBYTES], ss2[MLWQ_SSBYTES];
+    ref_mlwq_kem_keygen(&pk, &sk);
+    ref_mlwq_kem_encaps(&ct, ss1, &pk);
+    correctness_ok = (uint32_t)(ref_mlwq_kem_decaps(ss2, &sk, &ct) && (memcmp(ss1, ss2, MLWQ_SSBYTES) == 0));
+  }
+  printf("   [%s] Correctness verified.\r\n", correctness_ok ? "PASS" : "FAIL");
+  if(!correctness_ok) {
+    printf("Abort benchmark due to failed correctness check.\r\n\r\n");
+    return;
+  }
+
+  printf(">>> Running benchmark (%lu rounds)...\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("TEST POINTS: KG=[GenMatrix/Sample/GenDither/Arith/Quantize] ");
+  printf("ENC=[GenMatrix/Sample/GenDither/Arith(u)/Arith(v)/Quantize(u)] DEC=[DeQuant/Arith/Decode] ");
+  printf("KEM=[KeyGen/Encaps/Decaps]\r\n");
+
+  /* 启用 DWT 周期计数器 */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+  for(uint32_t round = 0; round < MLWQ_BENCH_ROUNDS; round++)
+  {
+    measure_pke_keygen_round(&totals);
+    measure_pke_encrypt_round(&totals);
+    measure_pke_decrypt_round(&totals);
+    measure_kem_round(&totals);
+
+    if(((round + 1u) % MLWQ_BENCH_PROGRESS_STEP) == 0u) {
+      printf("BENCH PROGRESS: %lu/%lu\r\n",
+             (unsigned long)(round + 1u),
+             (unsigned long)MLWQ_BENCH_ROUNDS);
+    }
+  }
+
+  printf("\r\n>>> PART 1: Internal Breakdown (Scalar)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf(" PKE KeyGen Breakdown (Avg, %lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("%s", PROFILE_SEPARATOR);
+  printf("GenMatrix (A): %lu\r\n", (unsigned long)bench_avg(totals.key_genA));
+  printf("Sample (s): %lu\r\n", (unsigned long)bench_avg(totals.key_sample_s));
+  printf("GenDither: %lu\r\n", (unsigned long)bench_avg(totals.key_gendither));
+  printf("Arith (A*s): %lu\r\n", (unsigned long)bench_avg(totals.key_arith_as));
+  printf("Quantize: %lu\r\n", (unsigned long)bench_avg(totals.key_quantize));
+
+  printf("\r\n%s", PROFILE_SEPARATOR);
+  printf(" PKE Encrypt Breakdown (Avg, %lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("%s", PROFILE_SEPARATOR);
+  printf("GenMatrix (A): %lu\r\n", (unsigned long)bench_avg(totals.enc_genA));
+  printf("Sample (r): %lu\r\n", (unsigned long)bench_avg(totals.enc_sample_r));
+  printf("GenDither (u): %lu\r\n", (unsigned long)bench_avg(totals.enc_gendither_u));
+  printf("Arith (u): %lu\r\n", (unsigned long)bench_avg(totals.enc_arith_u));
+  printf("Arith (v): %lu\r\n", (unsigned long)bench_avg(totals.enc_arith_v));
+  printf("Quantize (u): %lu\r\n", (unsigned long)bench_avg(totals.enc_quantize_u));
+
+  printf("\r\n%s", PROFILE_SEPARATOR);
+  printf(" PKE Decrypt Breakdown (Avg, %lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("%s", PROFILE_SEPARATOR);
+  printf("DeQuantize: %lu\r\n", (unsigned long)bench_avg(totals.dec_deq));
+  printf("Arith (v-su): %lu\r\n", (unsigned long)bench_avg(totals.dec_arith));
+  printf("Decode: %lu\r\n", (unsigned long)bench_avg(totals.dec_decode));
+
+  printf("\r\n>>> PART 2: Core Component Comparison (Quantize vs Sample)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  q_avg = bench_avg(totals.key_quantize);
+  s_avg = bench_avg(totals.key_sample_s);
+  printf("KeyGen Quantize avg: %lu\r\n", (unsigned long)q_avg);
+  printf("KeyGen Sample avg: %lu\r\n", (unsigned long)s_avg);
+  if(q_avg != 0u) {
+    printf("Sample/Quantize ratio: %lu.%02lu x\r\n",
+           (unsigned long)(s_avg / q_avg),
+           (unsigned long)((s_avg % q_avg) * 100u / q_avg));
+  } else {
+    printf("Sample/Quantize ratio: N/A\r\n");
+  }
+
+  printf("\r\n>>> PART 3: PKE Full Flow Summary (Total Time)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("PKE KeyGen: %lu\r\n", (unsigned long)bench_avg(totals.pke_keygen));
+  printf("PKE Encrypt: %lu\r\n", (unsigned long)bench_avg(totals.pke_encrypt));
+  printf("PKE Decrypt: %lu\r\n", (unsigned long)bench_avg(totals.pke_decrypt));
+
+  printf("\r\n>>> PART 4: KEM Full Flow Summary (IND-CCA2)\r\n");
+  printf("%s", PROFILE_SEPARATOR);
+  printf("KEM KeyGen: %lu\r\n", (unsigned long)bench_avg(totals.kem_keygen));
+  printf("KEM Encaps: %lu\r\n", (unsigned long)bench_avg(totals.kem_encaps));
+  printf("KEM Decaps: %lu\r\n", (unsigned long)bench_avg(totals.kem_decaps));
+
+  printf("\r\nPKE decode mismatch count: %lu\r\n", (unsigned long)totals.pke_mismatch_count);
+  printf("KEM shared-secret mismatch count: %lu\r\n", (unsigned long)totals.kem_mismatch_count);
+  printf("[FINAL] Benchmark complete.\r\n\r\n");
+}
+
+static void measure_viper_round(viper_bench_totals_t *totals)
+{
+  vpoly A[VIPER_K][VIPER_K];
+  uint16_t dpk[VIPER_K][VIPER_N];
+  vpolyvec s, r, b, u;
+  vpoly t;
+  uint8_t rho[32], sseed[32], rseed[32];
+  uint32_t t0;
+
+  random_bytes(rho, sizeof(rho));
+  random_bytes(sseed, sizeof(sseed));
+  random_bytes(rseed, sizeof(rseed));
+
+  viper_gen_public(A, dpk, rho);
+  viper_sample_secret(s, sseed, VIPER_ETA_S);
+  viper_sample_secret(r, rseed, VIPER_ETA_R);
+
+  t0 = DWT->CYCCNT;
+  viper_poly_mul(t, A[0][0], s[0]);
+  totals->mul += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  viper_matvec(b, A, s);
+  totals->as += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  viper_matTvec(u, A, r);
+  totals->atr += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  viper_dot(t, b, r);
+  totals->btr += (uint64_t)(DWT->CYCCNT - t0);
+
+  t0 = DWT->CYCCNT;
+  viper_dot(t, s, u);
+  totals->stu += (uint64_t)(DWT->CYCCNT - t0);
+}
+
+static void run_viper_breakdown(void)
+{
+  viper_bench_totals_t totals = {0};
+
+  printf("\r\n=== Viper Breakdown Benchmark (STM32 Scalar) ===\r\n");
+  printf("VIPER_LEVEL=%d\r\n", VIPER_LEVEL);
+  viper_backend_report(stdout);
+
+  /* 启用 DWT 周期计数器 */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+  for(uint32_t round = 0; round < VIPER_BENCH_ROUNDS; round++)
+  {
+    measure_viper_round(&totals);
+    if(((round + 1u) % VIPER_BENCH_PROGRESS_STEP) == 0u) {
+      printf("VIPER BENCH PROGRESS: %lu/%lu\r\n",
+             (unsigned long)(round + 1u),
+             (unsigned long)VIPER_BENCH_ROUNDS);
+    }
+  }
+
+  printf("\r\n%s", PROFILE_SEPARATOR);
+  printf(" Viper Breakdown (Avg, %lu rounds)\r\n", (unsigned long)VIPER_BENCH_ROUNDS);
+  printf("%s", PROFILE_SEPARATOR);
+  printf("Mul: %lu\r\n", (unsigned long)viper_bench_avg(totals.mul));
+  printf("A*s: %lu\r\n", (unsigned long)viper_bench_avg(totals.as));
+  printf("A^T*r: %lu\r\n", (unsigned long)viper_bench_avg(totals.atr));
+  printf("b^T*r: %lu\r\n", (unsigned long)viper_bench_avg(totals.btr));
+  printf("s^T*u: %lu\r\n", (unsigned long)viper_bench_avg(totals.stu));
+  printf("%s", PROFILE_SEPARATOR);
+  printf("[FINAL] Viper breakdown complete.\r\n\r\n");
+}
 /* USER CODE END 0 */
 
 /**
@@ -117,72 +579,35 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // 开机提示
   printf("=========================\r\n");
-  printf("  RNG TEST SYSTEM READY\r\n");
+  printf("  MLWQ TEST SYSTEM READY\r\n");
   printf("=========================\r\n");
-  printf("CMD: R=PRINT RANDOM\r\n");
-  printf("CMD: L=RANDOM+LED FLASH\r\n");
+  printf("CMD: M=RUN COMPREHENSIVE SCALAR BENCHMARK (%lu rounds)\r\n", (unsigned long)MLWQ_BENCH_ROUNDS);
+  printf("CMD: V=RUN VIPER BREAKDOWN (%lu rounds)\r\n", (unsigned long)VIPER_BENCH_ROUNDS);
   printf("=========================\r\n");
   /* USER CODE END 2 */
 
   // 4. 主循环
   while (1)
+  {
+    if(cmd_flag == 1)
     {
-      if(cmd_flag == 1)
+      cmd_flag = 0;
+
+      if(cmd == 'M' || cmd == 'm')
       {
-        cmd_flag = 0;
-
-        if(cmd == 'R' || cmd == 'r')
-        {
-          // --------------------------
-          // 测试 random_bytes
-          // --------------------------
-          uint8_t rnd_buf[16];
-          random_bytes(rnd_buf, 16);
-
-          printf("RANDOM 16 BYTES:\r\n");
-          for(int i=0; i<16; i++)
-          {
-            printf("%02X ", rnd_buf[i]);
-          }
-          printf("\r\n\r\n");
-        }
-        else if(cmd == 'P' || cmd == 'p')
-        {
-          // --------------------------
-          // 测试随机多项式 uniform
-          // --------------------------
-          poly p;
-          random_poly_uniform(&p);
-
-          printf("POLY UNIFORM (first 10 coeffs):\r\n");
-          for(int i=0; i<10; i++)
-          {
-            printf("%d ", p.coeffs[i]);
-          }
-          printf("\r\n\r\n");
-        }
-        else if(cmd == 'E' || cmd == 'e')
-        {
-          // --------------------------
-          // 测试 CBD eta 随机多项式
-          // --------------------------
-          poly p;
-          random_poly_eta(&p);
-
-          printf("POLY ETA (CBD, first 10):\r\n");
-          for(int i=0; i<10; i++)
-          {
-            printf("%d ", p.coeffs[i]);
-          }
-          printf("\r\n\r\n");
-        }
-        else
-        {
-          printf("INVALID CMD\r\n\r\n");
-        }
+        run_mlwq_benchmark();
+      }
+      else if(cmd == 'V' || cmd == 'v')
+      {
+        run_viper_breakdown();
+      }
+      else
+      {
+        printf("ONLY CMD 'M' OR 'V' IS ENABLED\r\n\r\n");
       }
     }
   }
+}
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -207,9 +632,9 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 72;
+  RCC_OscInitStruct.PLL.PLLN = 168;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 3;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -221,10 +646,10 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
